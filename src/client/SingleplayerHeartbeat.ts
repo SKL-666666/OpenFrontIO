@@ -1,6 +1,7 @@
 import { GameID } from "@openfront/engine-api/Schemas";
 import { ClientEnv } from "./ClientEnv";
 import { clientPlatform } from "./ClientPlatform";
+import { isLocalMode } from "./LocalMode";
 
 // The server counts a game while its last beat is younger than three
 // intervals (SingleplayerPresence on the worker), so a missed beat or a
@@ -19,9 +20,15 @@ export const SINGLEPLAYER_HEARTBEAT_INTERVAL_MS = 60_000;
  * host. On the static apex page no server is known yet and the URL cannot
  * be built; that beat is skipped rather than aimed at the page host.
  *
+ * A local-only build skips it before any of that: no server exists to export
+ * a gauge from, so there is no interval to start and nothing to stop.
+ *
  * Returns a function that stops the heartbeat.
  */
 export function startSingleplayerHeartbeat(gameID: GameID): () => void {
+  // A local-only build has no game server to export a gauge from, and no
+  // network to send one over. Nothing to stop either, so no timer is started.
+  if (isLocalMode()) return () => {};
   const beat = () => {
     try {
       const url = `${ClientEnv.gameHttpBase(gameID)}/${ClientEnv.gameWorkerPath(gameID)}/api/singleplayer/${gameID}/heartbeat`;

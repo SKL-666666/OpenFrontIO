@@ -35,6 +35,7 @@ import { HostLobbyModal } from "./HostLobbyModal";
 import { showInGameAlert } from "./InGameModal";
 import { JoinLobbyModal } from "./JoinLobbyModal";
 import { PublicLobbySocket } from "./LobbySocket";
+import { isLocalMode } from "./LocalMode";
 import { JoinLobbyEvent } from "./Main";
 import {
   backendUnreachableConfirmed,
@@ -251,15 +252,17 @@ export function reportMultiplayerRefusal(backendOutage: boolean): void {
 /**
  * Whether the multiplayer gate applies to a given join at all. Single-player
  * runs entirely in-client and a replay simulates from an archived record, so
- * neither needs a session, an up-to-date build, or a backend that is up.
- * getTurnstileToken in Main.ts exempts the same pair (alongside two
- * conditions irrelevant here), and calls this so the two cannot drift.
- * Exported for tests and kept free of component state, like
- * shouldBlockMultiplayerAction above.
+ * neither needs a session, an up-to-date build, or a backend that is up. A
+ * LOCAL ROOM is the same case: it has peers but no server behind them, so there
+ * is no session for a gate to be about. getTurnstileToken in Main.ts exempts
+ * the same three (alongside two conditions irrelevant here), and calls this so
+ * the two cannot drift. Exported for tests and kept free of component state,
+ * like shouldBlockMultiplayerAction above.
  */
 export function joinIsGateable(lobby: JoinLobbyEvent): boolean {
   return (
     lobby.gameStartInfo?.config.gameType !== GameType.Singleplayer &&
+    lobby.localRoom === undefined &&
     lobby.gameRecord === undefined
   );
 }
@@ -550,6 +553,11 @@ export class GameModeSelector extends LitElement {
    * snapshot and re-primes the list from the server.
    */
   public start() {
+    // A local-only build has no lobby feed to open: there is no server to
+    // dial and nothing in renderLocal() that shows its cards. Opening it here
+    // would spend a socket attempt per menu visit, each of which fails and
+    // retries on a timer for as long as the tab stays open.
+    if (isLocalMode()) return;
     this.openLobbyFeed();
   }
 
@@ -646,6 +654,14 @@ export class GameModeSelector extends LitElement {
   }
 
   render() {
+    // A local-only build renders a different menu entirely: there is no lobby
+    // feed to list, nothing to create a lobby WITH, and nothing to join one
+    // across the internet. Solo and a local room are the whole of it, so the
+    // feed columns, the multiplayer cards and the streaming panel are all dead
+    // weight — each would open a spinner or an error over a server that does
+    // not exist.
+    if (isLocalMode()) return this.renderLocal();
+
     const ffa = this.lobbies?.games?.["ffa"]?.[0];
     const teams = this.lobbies?.games?.["team"]?.[0];
     const special = this.lobbies?.games?.["special"]?.[0];
@@ -757,6 +773,55 @@ export class GameModeSelector extends LitElement {
       </div>
     `;
   }
+
+  /**
+   * The local-only menu: Solo, and a local multiplayer room beneath it.
+   *
+   * Reuses renderSmallActionCard rather than a bespoke layout so the cards look
+   * exactly like the ones they replace. The Tutorial card rides beside Solo
+   * while it is still relevant, as it does on the online menu.
+   *
+   * There is no lobby column here on purpose: with no server there is no feed to
+   * list, and the spinner that would stand in for it never resolves.
+   */
+  private renderLocal(): TemplateResult {
+    return html`
+      <div
+        class="flex flex-col gap-4 w-full px-4 pb-4 mx-auto sm:px-0 sm:pb-0 sm:grid sm:grid-cols-[2fr_1fr] sm:grid-rows-[auto_auto] sm:max-w-4xl"
+      >
+        <div class="flex gap-4 h-14 sm:col-span-2">
+          <div class="flex-[2]">
+            ${this.renderSmallActionCard(
+              translateText("main.solo"),
+              this.openSinglePlayerModal,
+              PRIMARY_ACTION,
+            )}
+          </div>
+          ${getGamesPlayed() < TUTORIAL_CARD_MAX_GAMES
+            ? html`<div class="flex-1">
+                ${this.renderSmallActionCard(
+                  translateText("main.tutorial"),
+                  this.startTutorial,
+                  TUTORIAL_ACTION,
+                )}
+              </div>`
+            : nothing}
+        </div>
+        <div class="h-14 sm:col-span-2">
+          ${this.renderSmallActionCard(
+            translateText("local_room.title") || "Local multiplayer",
+            this.openLocalRoomModal,
+            SECONDARY_ACTION,
+          )}
+        </div>
+      </div>
+    `;
+  }
+
+  private openLocalRoomModal = () => {
+    if (!this.validateUsername()) return;
+    window.showPage?.("page-local-room");
+  };
 
   /**
    * Refuses an API-DEPENDENT action (Create, Ranked, Join by code) and tells

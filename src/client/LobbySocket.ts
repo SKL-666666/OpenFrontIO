@@ -4,6 +4,7 @@ import { decodeLobbyMessage } from "@openfront/shared/ZbinWire";
 import { ClientEnv, NoServerError } from "src/client/ClientEnv";
 import { clientPlatform } from "./ClientPlatform";
 import { showInGameAlert } from "./InGameModal";
+import { isLocalMode } from "./LocalMode";
 import {
   ensureServerList,
   refreshServerList,
@@ -78,6 +79,14 @@ export class PublicLobbySocket {
     // would re-dial every GAVE_UP_RETRY_MS for as long as it stays open.
     // Report it as given up so a caller showing the list stops spinning.
     if (isReplayShellHost(window.location.hostname)) {
+      this.stop();
+      this.onGaveUp?.();
+      return;
+    }
+    // A local-only build has no lobby feed: there is no server and no API to
+    // ask for one. Reported as given up so a caller showing the list stops
+    // spinning instead of re-dialling forever.
+    if (isLocalMode()) {
       this.stop();
       this.onGaveUp?.();
       return;

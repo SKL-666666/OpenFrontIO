@@ -78,6 +78,8 @@ import "./LangSelector";
 import { LangSelector } from "./LangSelector";
 import { initLayout } from "./Layout";
 import "./LeaderboardModal";
+import { isLocalMode } from "./LocalMode";
+import "./LocalRoomModal";
 import "./Matchmaking";
 import { MatchmakingModal } from "./Matchmaking";
 import {
@@ -159,6 +161,8 @@ import "./components/BannedModal";
 import "./components/DesktopStatusBar";
 import "./components/MarketingConsentToast";
 import "./components/PurchaseNudgeModal";
+import { localRoomCodeFromHash } from "./local/LocalHub";
+import type { LocalRoomConfig } from "./local/LocalPeer";
 import { classicReplayHref } from "./replay/ReplayEntry";
 import { parseReplayViewerHash } from "./replay/ReplayViewerRoute";
 import { initAudioMixer } from "./sound/AudioMixer";
@@ -256,12 +260,29 @@ export interface JoinLobbyEvent {
   gameStartInfo?: WireGameStartInfo;
   // GameRecord exists when replaying an archived game.
   gameRecord?: GameRecord;
-  source?: "public" | "private" | "host" | "matchmaking" | "singleplayer";
+  source?:
+    | "public"
+    | "private"
+    | "host"
+    | "matchmaking"
+    | "singleplayer"
+    | "local-room";
   publicLobbyInfo?: GameInfo | PublicGameInfo;
   // Watch without playing.
   spectator?: boolean;
   // Host only: the play token the lobby was created under (see createLobby).
   creatorToken?: string;
+  /**
+   * A local multiplayer room (LocalPeer) instead of a game behind a server:
+   * peers find each other over a LocalHub, and the tab that created the room
+   * also runs its relay.
+   *
+   * Carries the gameID for URL/history purposes only — the peers agree on the
+   * real roster when the relay builds the start message, which is where a local
+   * game's gameStartInfo comes from (unlike singleplayer's, which the initiating
+   * page builds itself).
+   */
+  localRoom?: LocalRoomConfig;
 }
 
 /**
@@ -955,6 +976,11 @@ class Client {
       this.handleUrl();
     }
 
+    // A local room named in the hash: open its join dialog with the code
+    // already filled in. After handleUrl, so a real /game/<id> URL — which has
+    // no local-room hash and so falls straight through — is handled first.
+    void this.handleLocalRoomHash();
+
     // An invite accepted from outside the app is parked by the shell, because
     // it arrives before this renderer exists. Pull it now that we are alive.
     void desktopPresence
@@ -1503,13 +1529,15 @@ class Client {
             ? joinInfo.numClients
             : joinInfo.clients?.filter((c) => !c.spectator).length,
       maxPlayers: joinConfig?.maxPlayers,
-      // Omitted for singleplayer and replays: no server hosts those ids, so
-      // advertising one has the shell offer friends a Join that cannot work.
-      // The optional field already means "not joinable". presenceLobbyId
-      // withholds it for public FFA too, for the same reason the invite
-      // button hides there: a friend joining that match is a team.
+      // Omitted for singleplayer, replays and local rooms: no server hosts those
+      // ids, so advertising one has the shell offer friends a Join that cannot
+      // work. The optional field already means "not joinable".
+      // presenceLobbyId withholds it for public FFA too, for the same reason:
+      // a friend joining that match is a team.
       lobbyId:
-        lobby.source === "singleplayer" || lobby.gameRecord !== undefined
+        lobby.source === "singleplayer" ||
+        lobby.gameRecord !== undefined ||
+        lobby.localRoom !== undefined
           ? undefined
           : presenceLobbyId(joinConfig, lobby.gameID),
     };
@@ -1528,7 +1556,15 @@ class Client {
     }
     // Only update URL immediately for private lobbies, not public ones
     if (lobby.source !== "public") {
-      this.updateJoinUrlForShare(lobby.gameID);
+      // A local room is addressable only while the tab that created it is open,
+      // so it gets the page's own path plus the room code as a hash. Reloading
+      // that URL reopens the join dialog for the room instead of a dead
+      // `/game/<id>` that no server answers (see handleLocalRoomHash).
+      if (lobby.localRoom !== undefined) {
+        this.updateLocalRoomUrl(lobby.localRoom);
+      } else {
+        this.updateJoinUrlForShare(lobby.gameID);
+      }
     }
     // Singleplayer runs entirely locally, and the session is only used here
     // for the HUD role — the end-of-game archive establishes its own session
@@ -1571,6 +1607,7 @@ class Client {
       gameRecord: lobby.gameRecord,
       spectator: lobby.spectator,
       creatorToken: lobby.creatorToken,
+      localRoom: lobby.localRoom,
     });
 
     if (this.mostRecentJoinEvent !== event.timeStamp) {
@@ -1617,6 +1654,7 @@ class Client {
       this.joinModal?.closeWithoutLeaving();
       [
         "single-player-modal",
+        "local-room-modal",
         "game-starting-modal",
         "game-top-bar",
         "help-modal",
@@ -1681,7 +1719,12 @@ class Client {
       setInGameSignal(true);
 
       const lobbyIdHidden = !this.userSettings.lobbyIdVisibility();
-      if (isReplayShellHost(window.location.hostname)) {
+      if (lobby.localRoom !== undefined) {
+        // No navigation for a local room: `/game/<id>` is a server-rendered
+        // route and this room has no server, so pushing it would leave a URL
+        // that 404s on reload. The room code is already in the hash from
+        // updateLocalRoomUrl, which is the part that is worth keeping.
+      } else if (isReplayShellHost(window.location.hostname)) {
         // Keep the canonical replay URL (replay.<domain>/<gameId>): the
         // /game/<id> shape and the #refresh trampoline only exist on the
         // game-server origin, so rewriting here would leave a URL that 404s
@@ -1828,6 +1871,42 @@ class Client {
     }
   }
 
+  /**
+   * Put the local room's code in the URL, as a hash on this page's own path.
+   *
+   * A local room has no server, so there is no `/game/<id>` for anyone to open:
+   * the room exists only as long as the host's tab does. Keeping the code in the
+   * hash means a reload lands back on this page with the code still there, which
+   * is what makes the room re-joinable rather than merely recorded (see
+   * handleLocalRoomHash).
+   */
+  private updateLocalRoomUrl(room: LocalRoomConfig) {
+    const target = `${window.location.pathname}#local-room=${room.roomCode}`;
+    if (window.location.hash !== `#local-room=${room.roomCode}`) {
+      history.replaceState(null, "", target);
+    }
+  }
+
+  /**
+   * Reopen the join dialog for a room named in the hash, on a cold load.
+   *
+   * A local room cannot survive a reload (the simulation was in the tab that
+   * closed), so this offers to rejoin rather than restoring anything: what it
+   * can do is put the player back in front of the same room code, one click
+   * from being in the room again if the host is still up.
+   */
+  private async handleLocalRoomHash() {
+    const code = localRoomCodeFromHash(window.location.hash);
+    if (code === null) return;
+    await customElements.whenDefined("local-room-modal");
+    window.showPage?.("page-local-room");
+    document
+      .querySelector("local-room-modal")
+      ?.dispatchEvent(
+        new CustomEvent("prefill-room-code", { detail: { code } }),
+      );
+  }
+
   private async handleLeaveLobby(event?: CustomEvent) {
     // Above the lobbyHandle guard on purpose. Presence goes to "lobby" when
     // the join starts, but lobbyHandle is only assigned once the handshake
@@ -1965,6 +2044,9 @@ class Client {
     if (
       ClientEnv.env() === GameEnv.Dev ||
       isDesktopShell() ||
+      // A local-only build ships no Turnstile script at all, so there is no
+      // token to wait for (and nothing that could verify one).
+      isLocalMode() ||
       // Single-player and replays: no server to verify a token against (and
       // on the CDN replay shells Turnstile cannot load at all). Shared with
       // the desktop gate so the exemption has one definition.

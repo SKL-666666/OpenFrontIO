@@ -181,8 +181,26 @@ export class ClientEnv {
       // Absent on the web build (falls back to same-origin window.location).
       serverHost: bc.serverHost,
       siteHost: bc.siteHost,
+      // Local-only build: no server, no API, no third-party host.
+      local: bc.local === true,
     };
     return ClientEnv.values;
+  }
+
+  /**
+   * Whether this is the local-only build: the page is the whole game.
+   *
+   * True means there is no API and no game server anywhere, so every code path
+   * that would reach one must short-circuit instead of retrying a connection
+   * that can never succeed — and the menu must offer the local play options
+   * rather than the online ones.
+   *
+   * Read off the bootstrap rather than a build-time `define`, because the same
+   * bundle is served by the dev server, by a static host and by an optional
+   * LAN relay, and only the page knows which it was told to be.
+   */
+  static isLocalMode(): boolean {
+    return ClientEnv.get().local === true;
   }
 
   // TODO: the following methods are duplicated on ServerEnv. The two classes
@@ -678,4 +696,6 @@ export interface ClientEnvValues {
   gitCommit: string;
   serverHost?: string;
   siteHost?: string;
+  // Local-only build: the page is the whole game (no server, no API).
+  local?: boolean;
 }

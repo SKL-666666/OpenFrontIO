@@ -9,6 +9,7 @@ import { crazyGamesSDK } from "./CrazyGamesSDK";
 import type { DesktopSessionState, SessionFailureKind } from "./DesktopShell";
 import { desktopLinkGate, isDesktopShell } from "./DesktopShell";
 import { showInGameAlert } from "./InGameModal";
+import { isLocalMode } from "./LocalMode";
 import type { SteamTicketResult } from "./SteamSDK";
 import { steamSDK } from "./SteamSDK";
 import { generateCryptoRandomUUID, translateText } from "./Utils";
@@ -274,6 +275,16 @@ export async function getAuthHeader(): Promise<string> {
 }
 
 export async function logOut(allSessions: boolean = false): Promise<boolean> {
+  // No session to revoke on a local-only build, and no API to revoke it with.
+  //
+  // Deliberately a bare no-op rather than clearLocalSession(): that function
+  // also drops the persistent id, which is the seed the local guest identity
+  // (and therefore this player's clientID in any local room) is derived from.
+  // A sign-out that changed which player the client thinks you are would be a
+  // side effect of an action that has nothing to do with signing in, and in
+  // this build nothing ever signs in, so every consumer already renders the
+  // signed-out state that userAuth() reports.
+  if (isLocalMode()) return true;
   try {
     const response = await fetch(
       getApiBase() + (allSessions ? "/auth/revoke" : "/auth/logout"),

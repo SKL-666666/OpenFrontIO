@@ -43,6 +43,24 @@ declare global {
       // standalone deployments (beta, branch previews, dev), desktop, and
       // static pages.
       siteHost?: string;
+      /**
+       * Local-only build (this fork): the whole client runs from the page with
+       * no game server, no API and no third-party host reachable.
+       *
+       * Set at build time by vite.config.ts from LOCAL_ONLY. Every outbound
+       * request path (auth, telemetry, cosmetics, the server list, the
+       * singleplayer heartbeat, the end-of-game archive) checks
+       * `ClientEnv.isLocalMode()` and short-circuits, and the menu renders the
+       * local play options instead of the online ones.
+       *
+       * When true the four required values above are still supplied (they
+       * describe the environment, and ClientEnv.get() requires them), but the
+       * per-server ones are deliberately omitted so numWorkers() /
+       * serverWsBase() raise NoServerError into the paths that already handle
+       * it, instead of a socket hanging against a page host that answers no
+       * game path.
+       */
+      local?: boolean;
     };
   }
 }

@@ -181,6 +181,12 @@ function randomWorkerCreateProxy(numWorkers: number): Plugin {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const isProduction = mode === "production";
+  // The local-only fork. LOCAL_ONLY is set by `npm run dev` / `build:offline`
+  // and is the single switch behind two decisions: whether index.html is told
+  // to take the offline menu, and whether the dev server keeps proxies to a
+  // game server that this mode never starts. Everything else about the build is
+  // untouched.
+  const localOnly = env.LOCAL_ONLY === "1" || env.LOCAL_ONLY === "true";
   // Dev identity: the same INSTANCE_LETTER / NUM_WORKERS defaults the dev
   // server boots with (ServerEnv), so the dev-served index.html carries the
   // one-entry map production RenderHtml injects. The proxy below needs the
@@ -216,6 +222,9 @@ export default defineConfig(({ mode }) => {
     assetManifest: JSON.stringify(assetManifest),
     cdnBase: JSON.stringify(cdnBase),
     gameEnv: JSON.stringify(env.GAME_ENV ?? "dev"),
+    // EJS guard in index.html is `typeof local !== "undefined" && local`, so a
+    // string is what makes the flag emit; undefined leaves the line out.
+    local: localOnly ? "true" : undefined,
     cluster: devClusterJson,
     instanceLetter: JSON.stringify(devInstanceLetter),
     turnstileSiteKey: JSON.stringify(
@@ -368,7 +377,7 @@ export default defineConfig(({ mode }) => {
         ? [
             serveRootPublicDir(getPublicDir(resourcesDir)),
             serveProprietaryDir(proprietaryDir, resourcesDir),
-            randomWorkerCreateProxy(devNumWorkers),
+            ...(localOnly ? [] : [randomWorkerCreateProxy(devNumWorkers)]),
             steamLinkAliasRedirect(),
           ]
         : []),
@@ -429,36 +438,40 @@ export default defineConfig(({ mode }) => {
       host: process.env.VITE_HOST === "lan",
       // Automatically open the browser when the server starts
       open: process.env.SKIP_BROWSER_OPEN !== "true",
-      proxy: {
-        "/lobbies": {
-          target: "ws://localhost:3000",
-          ws: true,
-          changeOrigin: true,
-        },
-        // Worker proxies
-        "/w0": {
-          target: "ws://localhost:3001",
-          ws: true,
-          secure: false,
-          changeOrigin: true,
-          bypass: (req) => devGameHtmlBypass(req),
-          rewrite: (path) => path.replace(/^\/w0/, ""),
-        },
-        "/w1": {
-          target: "ws://localhost:3002",
-          ws: true,
-          secure: false,
-          changeOrigin: true,
-          bypass: (req) => devGameHtmlBypass(req),
-          rewrite: (path) => path.replace(/^\/w1/, ""),
-        },
-        // API proxies
-        "/api": {
-          target: "http://localhost:3000",
-          changeOrigin: true,
-          secure: false,
-        },
-      },
+      // No game server runs in local-only mode, so the proxies to one are
+      // dropped: they would only forward to a port nothing is listening on.
+      proxy: localOnly
+        ? undefined
+        : {
+            "/lobbies": {
+              target: "ws://localhost:3000",
+              ws: true,
+              changeOrigin: true,
+            },
+            // Worker proxies
+            "/w0": {
+              target: "ws://localhost:3001",
+              ws: true,
+              secure: false,
+              changeOrigin: true,
+              bypass: (req) => devGameHtmlBypass(req),
+              rewrite: (path) => path.replace(/^\/w0/, ""),
+            },
+            "/w1": {
+              target: "ws://localhost:3002",
+              ws: true,
+              secure: false,
+              changeOrigin: true,
+              bypass: (req) => devGameHtmlBypass(req),
+              rewrite: (path) => path.replace(/^\/w1/, ""),
+            },
+            // API proxies
+            "/api": {
+              target: "http://localhost:3000",
+              changeOrigin: true,
+              secure: false,
+            },
+          },
     },
   };
 });

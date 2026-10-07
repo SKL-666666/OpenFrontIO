@@ -77,6 +77,7 @@ import { WorkerClient } from "./WorkerClient";
 import { MapLayerController } from "./controllers/MapLayerController";
 import { createRenderer, GameRenderer } from "./hud/GameRenderer";
 import { goldRateTracker } from "./hud/layers/lib/GoldRateTracker";
+import type { LocalRoomConfig } from "./local/LocalPeer";
 import {
   applyGraphicsOverrides,
   createRenderSettings,
@@ -114,6 +115,16 @@ export interface LobbyConfig {
   // Host only: the play token the lobby was created under, used for the
   // first join so the host joins as the creator (see createLobby).
   creatorToken?: string;
+  /**
+   * A local multiplayer room (LocalPeer) instead of a singleplayer game or a
+   * replay: peers find each other over a LocalHub, and one of them — the tab
+   * that created the room — also runs its relay.
+   *
+   * gameStartInfo is deliberately NOT set for a local game: nobody knows the
+   * roster before the room starts, so the start info is built by the relay and
+   * arrives in the start message exactly like a multiplayer server's does.
+   */
+  localRoom?: LocalRoomConfig;
 }
 
 export interface JoinLobbyResult {

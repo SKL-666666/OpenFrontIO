@@ -29,6 +29,7 @@ import {
   GameSpeedUpIntentEvent,
   ReplaySpeedChangeEvent,
 } from "./InputHandler";
+import { isLocalMode } from "./LocalMode";
 import { startSingleplayerHeartbeat } from "./SingleplayerHeartbeat";
 import {
   defaultReplaySpeedMultiplier,
@@ -298,6 +299,9 @@ export class LocalServer {
   }
 
   private archiveGameRecord(unloading: boolean) {
+    // A local-only build has nowhere to archive to. Skipped here rather than
+    // in archiveGame so no record is even assembled.
+    if (isLocalMode()) return;
     if (this.archived || this.archiveInFlight) {
       return;
     }

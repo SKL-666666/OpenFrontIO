@@ -172,7 +172,7 @@
         gitCommit: <%- gitCommit %>,
         assetManifest: <%- assetManifest %>,
         cdnBase: <%- cdnBase %>,
-        gameEnv: <%- gameEnv %>,<%- typeof cluster !== "undefined" && cluster ? "\n        cluster: " + cluster + "," : "" %><%- typeof instanceLetter !== "undefined" && instanceLetter ? "\n        instanceLetter: " + instanceLetter + "," : "" %>
+        gameEnv: <%- gameEnv %>,<%- typeof local !== "undefined" && local ? "\n        local: true," : "" %><%- typeof cluster !== "undefined" && cluster ? "\n        cluster: " + cluster + "," : "" %><%- typeof instanceLetter !== "undefined" && instanceLetter ? "\n        instanceLetter: " + instanceLetter + "," : "" %>
         turnstileSiteKey: <%- turnstileSiteKey %>,
         jwtAudience: <%- jwtAudience %>,<%- typeof stripePublishableKey !== "undefined" && stripePublishableKey ? "\n        stripePublishableKey: " + stripePublishableKey + "," : "" %><%- typeof faroCollectorUrl !== "undefined" && faroCollectorUrl ? "\n        faroCollectorUrl: " + faroCollectorUrl + "," : "" %><%- typeof instanceId !== "undefined" && instanceId ? "\n        instanceId: " + instanceId + "," : "" %><%- typeof serverHost !== "undefined" && serverHost ? "\n        serverHost: " + serverHost + "," : "" %><%- typeof siteHost !== "undefined" && siteHost ? "\n        siteHost: " + siteHost + "," : "" %>
       };
@@ -200,61 +200,23 @@
       );
     </script>
 
-    <!-- CrazyGames SDK -->
-    <script
-      src="https://sdk.crazygames.com/crazygames-sdk-v3.js"
-      async
-    ></script>
+    <!--
+      Local-only build (this fork): the third-party hosts below — CrazyGames,
+      Cloudflare Turnstile, Google gtag, Cloudflare Insights and Ramp — are all
+      removed. They are the page's only outbound requests, and a local build
+      has no business making any. The code paths that used them already treat
+      their absence as the normal case (crazyGamesSDK no-ops off the SDK,
+      Main.getTurnstileToken returns null for anything not gateable), so nothing
+      else needs to change.
 
-    <!-- Cloudflare Turnstile -->
-    <script
-      src="https://challenges.cloudflare.com/turnstile/v0/api.js"
-      async
-      defer
-    ></script>
-
-    <script data-cfasync="false">
-      window.ramp = window.ramp || {};
-      window.ramp.que = window.ramp.que || [];
-      window.ramp.passiveMode = true;
-    </script>
-
-    <script>
-      window.googletag = window.googletag || { cmd: [] };
-      googletag.cmd.push(function () {
-        googletag.pubads().set("page_url", "http://openfront.io ");
-      });
-    </script>
-
-    <!-- Analytics -->
-    <script
-      async
-      src="https://www.googletagmanager.com/gtag/js?id=AW-16702609763"
-    ></script>
-    <script>
-      window.dataLayer = window.dataLayer || [];
-
-      function gtag() {
-        dataLayer.push(arguments);
-      }
-
-      gtag("js", new Date());
-      gtag("config", "AW-16702609763");
-    </script>
-    <!-- Google tag (gtag.js) -->
-    <script
-      async
-      src="https://www.googletagmanager.com/gtag/js?id=G-WQGQQ8RDN4"
-    ></script>
-    <script>
-      window.dataLayer = window.dataLayer || [];
-      function gtag() {
-        dataLayer.push(arguments);
-      }
-      gtag("js", new Date());
-
-      gtag("config", "G-WQGQQ8RDN4");
-    </script>
+      Removed from here:
+        https://sdk.crazygames.com/crazygames-sdk-v3.js
+        https://challenges.cloudflare.com/turnstile/v0/api.js
+        https://www.googletagmanager.com/gtag/js?id=AW-16702609763
+        https://www.googletagmanager.com/gtag/js?id=G-WQGQQ8RDN4
+        https://static.cloudflareinsights.com/beacon.min.js
+        //cdn.intergient.com/1025558/75940/ramp.js
+    -->
   </head>
 
   <body
@@ -312,10 +274,16 @@
         class="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-99999"
       ></div>
 
+      <% if (!(typeof local !== "undefined" && local)) { %>
+      <!-- Online-only chrome: promo rails, the ban banner and the marketing
+           consent toast all exist to serve an API a local build never talks
+           to. Emitted only when `local` is unset, so the server-rendered page
+           (RenderHtml, Steam shell) still gets them. -->
       <homepage-promos></homepage-promos>
       <banned-modal></banned-modal>
       <marketing-consent-toast></marketing-consent-toast>
       <purchase-nudge-modal></purchase-nudge-modal>
+      <% } %>
 
       <!-- Main container with responsive padding -->
       <main-layout class="contents">
@@ -335,6 +303,11 @@
           inline
           class="hidden w-full h-full page-content relative z-50"
         ></single-player-modal>
+        <local-room-modal
+          id="page-local-room"
+          inline
+          class="hidden w-full h-full page-content relative z-50"
+        ></local-room-modal>
         <host-lobby-modal
           id="page-host-lobby"
           inline
@@ -413,9 +386,11 @@
         ></detailed-view-modal>
       </main-layout>
 
+      <% if (!(typeof local !== "undefined" && local)) { %>
       <div class="[.in-game_&]:hidden mt-auto flex flex-col shrink-0">
         <page-footer></page-footer>
       </div>
+      <% } %>
 
       <!-- Global Modals -->
       <steam-link-modal></steam-link-modal>
@@ -502,11 +477,13 @@
     <player-info-overlay></player-info-overlay>
     <heads-up-message></heads-up-message>
 
+    <% if (!(typeof local !== "undefined" && local)) { %>
     <!-- Featured stream: direct <body> child (NOT inside the in-[.in-game]:hidden
          home container) so the Twitch iframe is never display:none'd during a game,
          which would unmount the player and break ToS-compliant playback. The
          component is position:fixed and self-manages visibility (pauses in-game). -->
     <featured-stream></featured-stream>
+    <% } %>
 
     <!-- Steam shell status bar. A direct <body> child, like
          featured-stream above, so it is not inside the home container -- but
@@ -591,19 +568,6 @@
       });
     </script>
 
-    <!-- Analytics -->
-    <script
-      defer
-      src="https://static.cloudflareinsights.com/beacon.min.js"
-      data-cf-beacon='{"token": "03d93e6fefb349c28ee69b408fa25a13"}'
-    ></script>
     <script type="module" src="/src/client/Main.ts"></script>
-    <footer>
-      <script
-        data-cfasync="false"
-        async
-        src="//cdn.intergient.com/1025558/75940/ramp.js"
-      ></script>
-    </footer>
   </body>
 </html>

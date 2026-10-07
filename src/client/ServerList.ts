@@ -15,6 +15,7 @@ import { z } from "zod";
 import { getApiBase } from "./ApiBase";
 import { ClientEnv } from "./ClientEnv";
 import { isDesktopShell } from "./DesktopShell";
+import { isLocalMode } from "./LocalMode";
 import { pagePin } from "./PagePin";
 import { isReplayShellHost } from "./VersionedReplay";
 
@@ -554,6 +555,10 @@ export function setServerListInGame(value: boolean): void {
  * still routes.
  */
 export async function ensureServerList(): Promise<ServerListStatus> {
+  // A local-only build asks the API for nothing, so there is no list to fetch
+  // and none to apply: the page's own values are already the whole answer, and
+  // "fallback" is exactly what apply() returns with no cached list.
+  if (isLocalMode()) return "fallback";
   try {
     if (cached === null) {
       // Join the attempt in flight (the page-load one, usually); otherwise

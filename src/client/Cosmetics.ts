@@ -36,6 +36,7 @@ import {
 } from "./Api";
 import { isDesktopShell } from "./DesktopShell";
 import { showInGameAlert, showInGameConfirm } from "./InGameModal";
+import { isLocalMode } from "./LocalMode";
 import {
   classifyPurchaseReturn,
   paymentsProvider,
@@ -856,6 +857,11 @@ export async function fetchCosmetics(): Promise<Cosmetics | null> {
   if (__cosmetics !== null) {
     return __cosmetics;
   }
+  // A local-only build has no API to serve the catalog. Every consumer already
+  // treats null as "no catalog" and falls back to the free/default cosmetics,
+  // so this is the same answer an unreachable API gives, just without the
+  // request.
+  if (isLocalMode()) return null;
   const request = (async () => {
     try {
       const response = await fetch(`${getApiBase()}/cosmetics.json`, {

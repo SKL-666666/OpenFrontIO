@@ -52,6 +52,8 @@ import { LobbyConfig } from "./ClientGameRunner";
 import { clientPlatform } from "./ClientPlatform";
 import { isDesktopShell } from "./DesktopShell";
 import { showInGameConfirm } from "./InGameModal";
+import { createHubSet } from "./local/LocalHub";
+import { LocalPeer } from "./local/LocalPeer";
 import { LocalServer } from "./LocalServer";
 import { describeSocketClose } from "./SocketClose";
 import { homeHref, translateText } from "./Utils";
@@ -255,6 +257,13 @@ export class Transport {
 
   private localServer: LocalServer;
 
+  /**
+   * The other local kind: a multiplayer room with no server behind it (see
+   * LocalPeer). Mutually exclusive with localServer, which is what `isLocal`
+   * below means — a game with no socket, whichever of the two is driving it.
+   */
+  private localPeer: LocalPeer | null = null;
+
   private buffer: ClientMessage[] = [];
 
   private onconnect: () => void;
@@ -290,8 +299,10 @@ export class Transport {
   ) {
     // If gameRecord is not null, we are replaying an archived game.
     // For multiplayer games, GameConfig is not known until game starts.
+    // A localRoom is a third local case: multiplayer-shaped, still no socket.
     this.isLocal =
       this.lobbyConfig.gameRecord !== undefined ||
+      this.lobbyConfig.localRoom !== undefined ||
       this.lobbyConfig.gameStartInfo?.config.gameType === GameType.Singleplayer;
 
     this.subscribe(SendAllianceRequestIntentEvent, (e) =>
@@ -416,7 +427,11 @@ export class Transport {
     onmessage: (message: ServerMessage) => void,
   ) {
     if (this.isLocal) {
-      this.localServer.updateCallback(onconnect, onmessage);
+      if (this.localPeer !== null) {
+        this.localPeer.updateCallback(onconnect, onmessage);
+      } else {
+        this.localServer.updateCallback(onconnect, onmessage);
+      }
     } else {
       this.onconnect = onconnect;
       this.onmessage = onmessage;
@@ -427,6 +442,16 @@ export class Transport {
     onconnect: () => void,
     onmessage: (message: ServerMessage) => void,
   ) {
+    const room = this.lobbyConfig.localRoom;
+    if (room !== undefined) {
+      this.localPeer = new LocalPeer(
+        createHubSet(room.roomCode, room.relayUrl ?? null),
+        room,
+      );
+      this.localPeer.updateCallback(onconnect, onmessage);
+      this.localPeer.start();
+      return;
+    }
     this.localServer = new LocalServer(
       this.lobbyConfig,
       this.lobbyConfig.gameRecord !== undefined,
@@ -702,6 +727,10 @@ export class Transport {
 
   public turnComplete() {
     if (this.isLocal) {
+      if (this.localPeer !== null) {
+        this.localPeer.turnComplete();
+        return;
+      }
       this.localServer.turnComplete();
     }
   }
@@ -742,6 +771,10 @@ export class Transport {
       unsubscribe();
     }
     if (this.isLocal) {
+      if (this.localPeer !== null) {
+        this.localPeer.endGame();
+        return;
+      }
       this.localServer.endGame();
       return;
     }
@@ -1033,6 +1066,10 @@ export class Transport {
     }
     if (this.isLocal) {
       // Route to the in-process server; nothing goes over the wire.
+      if (this.localPeer !== null) {
+        this.localPeer.onMessage(msg);
+        return;
+      }
       this.localServer.onMessage(msg);
       return;
     } else if (this.socket === null) {
