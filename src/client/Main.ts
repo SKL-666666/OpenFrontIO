@@ -161,7 +161,7 @@ import "./components/BannedModal";
 import "./components/DesktopStatusBar";
 import "./components/MarketingConsentToast";
 import "./components/PurchaseNudgeModal";
-import { localRoomCodeFromHash } from "./local/LocalHub";
+import { localRoomParamsFromHash } from "./local/LocalHub";
 import type { LocalRoomConfig } from "./local/LocalPeer";
 import { classicReplayHref } from "./replay/ReplayEntry";
 import { parseReplayViewerHash } from "./replay/ReplayViewerRoute";
@@ -1896,15 +1896,20 @@ class Client {
    * from being in the room again if the host is still up.
    */
   private async handleLocalRoomHash() {
-    const code = localRoomCodeFromHash(window.location.hash);
+    const { code, relay } = localRoomParamsFromHash(window.location.hash);
     if (code === null) return;
     await customElements.whenDefined("local-room-modal");
     window.showPage?.("page-local-room");
-    document
-      .querySelector("local-room-modal")
-      ?.dispatchEvent(
-        new CustomEvent("prefill-room-code", { detail: { code } }),
-      );
+    // The relay rides along with the code so an LAN invite is one click: the
+    // guest must send frames to the host, and an empty relay would leave them
+    // talking only to their own tabs while everyone else waits.
+    document.querySelector("local-room-modal")?.dispatchEvent(
+      new CustomEvent("prefill-room-code", {
+        detail: { code, relay },
+        bubbles: true,
+        composed: true,
+      }),
+    );
   }
 
   private async handleLeaveLobby(event?: CustomEvent) {

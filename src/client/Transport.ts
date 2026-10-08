@@ -279,6 +279,15 @@ export class Transport {
   // scheduleReconnect and connectRemote so nothing reopens the socket.
   private connectionRefused = false;
 
+  // True once a local transport (LocalServer or LocalPeer) has actually
+  // started. Separate from `isLocal`, which says only that THIS game is local:
+  // an auto-pause issued before the local server exists would be queued as a
+  // regular intent and could land in the game's first turn.
+  private localStarted = false;
+
+  /** Set while the tab itself is the reason the game is paused. */
+  private autoPaused = false;
+
   // True once the server has responded to join/rejoin (via start or lobby_info),
   // proving the session is admitted and ready to accept gameplay intents.
   private isSessionReady = false;
@@ -382,6 +391,25 @@ export class Transport {
         spectator: e.spectator,
       } satisfies ClientSpectateMessage);
     });
+
+    // Auto-pause when the tab goes away, local games only.
+    //
+    // A backgrounded tab is throttled: timers stretch, requestAnimationFrame
+    // stops, and the player comes back to a game that ran without them — in a
+    // LAN room that also stalls the turn clock, since the relay waits on this
+    // peer's ACK and everyone else sits frozen. Sending `toggle_pause` is the
+    // same intent the pause button sends, so it rides the sealed turn and every
+    // client agrees on when it took effect.
+    //
+    // Never wired for an online game: there, one player tabbing away must not
+    // pause a match for nine strangers.
+    if (this.isLocal) {
+      const onVisibility = () => this.onVisibilityChange();
+      document.addEventListener("visibilitychange", onVisibility);
+      this.unsubscribers.push(() =>
+        document.removeEventListener("visibilitychange", onVisibility),
+      );
+    }
   }
 
   private subscribe<T extends GameEvent>(
@@ -390,6 +418,33 @@ export class Transport {
   ) {
     this.eventBus.on(eventType, handler);
     this.unsubscribers.push(() => this.eventBus.off(eventType, handler));
+  }
+
+  /**
+   * Pause the local game while this tab is hidden, resume it when it returns.
+   *
+   * Only ever fires once per transition: `autoPaused` is what stops a flurry of
+   * visibility events (an app switch can fire several) from queueing duplicate
+   * pause intents, and what stops us from un-pausing a game the player had
+   * already paused by hand before tabbing away.
+   */
+  private onVisibilityChange(): void {
+    if (!this.isLocal || !this.localStarted) return;
+    if (document.hidden) {
+      if (this.autoPaused) return;
+      this.autoPaused = true;
+      this.sendMsg({
+        type: "intent",
+        intent: { type: "toggle_pause", paused: true },
+      } satisfies ClientIntentMessage);
+    } else {
+      if (!this.autoPaused) return;
+      this.autoPaused = false;
+      this.sendMsg({
+        type: "intent",
+        intent: { type: "toggle_pause", paused: false },
+      } satisfies ClientIntentMessage);
+    }
   }
 
   private startPing() {
@@ -450,6 +505,7 @@ export class Transport {
       );
       this.localPeer.updateCallback(onconnect, onmessage);
       this.localPeer.start();
+      this.localStarted = true;
       return;
     }
     this.localServer = new LocalServer(
@@ -459,6 +515,7 @@ export class Transport {
     );
     this.localServer.updateCallback(onconnect, onmessage);
     this.localServer.start();
+    this.localStarted = true;
   }
 
   private connectRemote(

@@ -58,6 +58,41 @@ export function iconButton(src: string, label: string, onClick: () => void) {
   </button>`;
 }
 
+/**
+ * How far a "15 seconds" jump goes, in frames.
+ *
+ * One frame is one tick (ReplayControls counts them that way on the timeline),
+ * and a tick is 100 ms — the same 10 ticks a second the game runs at — so
+ * 15 s is 150 frames. Both directions use it, so there is one number to keep
+ * in step with the game's tick rate rather than two.
+ */
+export const SEEK_TICKS = 150;
+
+/**
+ * Jump a fixed slice of the timeline, rather than by a few frames.
+ *
+ * Deliberately text rather than `iconButton`: every icon there is a URL from
+ * resources/images, and "15 seconds" is a number a player wants to READ before
+ * clicking. `symbol` is an HTML entity so the direction needs no asset, and
+ * the label — which carries the direction and the amount in words — is what
+ * the tooltip and the screen reader get.
+ */
+export function seekButton(
+  symbol: string,
+  amount: string,
+  label: string,
+  onClick: () => void,
+) {
+  return html`<button
+    class="px-2 py-1 rounded-md cursor-pointer hover:bg-white/10 text-xs font-bold tabular-nums text-white/80"
+    title=${label}
+    aria-label=${label}
+    @click=${onClick}
+  >
+    <span aria-hidden="true">${symbol}</span> ${amount}
+  </button>`;
+}
+
 /** Leaves the viewer (same as leaving a game). */
 export function exitButton() {
   return iconButton(
@@ -188,6 +223,25 @@ export class ReplayControls extends LitElement {
               this.playing ? "replay_viewer.pause" : "replay_viewer.play",
             ),
             () => this.emit("replay-toggle-play"),
+          )}
+          ${seekButton(
+            "&#9664;",
+            "15s",
+            translateText("replay_viewer.rewind_15s") || "Back 15 seconds",
+            () => this.emit("replay-seek", Math.max(0, frame - SEEK_TICKS)),
+          )}
+          ${seekButton(
+            "&#9654;",
+            "15s",
+            translateText("replay_viewer.forward_15s") || "Forward 15 seconds",
+            () =>
+              this.emit(
+                "replay-seek",
+                // Clamped to what is loaded, not to the timeline's full
+                // length: a frame the processor has not reached is no more
+                // seekable than one past the end.
+                Math.min(this.loaded - 1, frame + SEEK_TICKS),
+              ),
           )}
           ${iconButton(
             speedIcon,

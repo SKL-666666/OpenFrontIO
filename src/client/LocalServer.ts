@@ -5,22 +5,16 @@ import {
   Turn,
 } from "@openfront/engine-api/Schemas";
 import { EventBus } from "@openfront/shared/EventBus";
-import {
-  createPartialGameRecord,
-  decompressGameRecord,
-  replacer,
-} from "@openfront/shared/SharedUtil";
+import { decompressGameRecord, replacer } from "@openfront/shared/SharedUtil";
 import {
   ClientMessage,
   ClientSendWinnerMessage,
   PartialGameRecord,
-  PartialGameRecordSchema,
   PlayerRecord,
   ServerMessage,
   ServerStartGameMessage,
 } from "@openfront/shared/WireSchemas";
 import { ClientEnv } from "src/client/ClientEnv";
-import { z } from "zod";
 import { getApiBase } from "./Api";
 import { getAuthHeader, getPersistentID } from "./Auth";
 import { LobbyConfig } from "./ClientGameRunner";
@@ -30,6 +24,8 @@ import {
   ReplaySpeedChangeEvent,
 } from "./InputHandler";
 import { isLocalMode } from "./LocalMode";
+import { PREFS, readPref, writePref } from "./LocalPrefs";
+import { keepLocalGameRecord } from "./LocalReplay";
 import { startSingleplayerHeartbeat } from "./SingleplayerHeartbeat";
 import {
   defaultReplaySpeedMultiplier,
@@ -57,7 +53,13 @@ export class LocalServer {
   private startedAt: number;
 
   private paused = false;
-  private replaySpeedMultiplier = defaultReplaySpeedMultiplier;
+  // Restored from the last session so a new game doesn't drop back to 1x every
+  // time — the one setting a player who sped a game up almost always wants
+  // kept. Written back whenever anything changes it (below).
+  private replaySpeedMultiplier = readPref<ReplaySpeedMultiplier>(
+    PREFS.gameSpeed,
+    defaultReplaySpeedMultiplier,
+  );
 
   private clientID: ClientID | undefined;
   private winner: ClientSendWinnerMessage | null = null;
@@ -114,6 +116,10 @@ export class LocalServer {
 
     this.eventBus.on(ReplaySpeedChangeEvent, (event) => {
       this.replaySpeedMultiplier = event.replaySpeedMultiplier;
+      // Remember it across games. One listener is the right place: the speed
+      // keys, the ReplayPanel buttons and the up/down intents all funnel
+      // through this event, so nothing can change speed without it sticking.
+      writePref(PREFS.gameSpeed, event.replaySpeedMultiplier);
     });
 
     if (!this.isReplay) {
@@ -299,9 +305,6 @@ export class LocalServer {
   }
 
   private archiveGameRecord(unloading: boolean) {
-    // A local-only build has nowhere to archive to. Skipped here rather than
-    // in archiveGame so no record is even assembled.
-    if (isLocalMode()) return;
     if (this.archived || this.archiveInFlight) {
       return;
     }
@@ -318,24 +321,25 @@ export class LocalServer {
     if (this.lobbyConfig.gameStartInfo === undefined) {
       throw new Error("missing gameStartInfo");
     }
-    const record = createPartialGameRecord(
-      this.lobbyConfig.gameStartInfo.gameID,
-      this.lobbyConfig.gameStartInfo.config,
+    // Kept BEFORE the upload decision below. This is the record the end of
+    // game screen reads to offer "watch it back" / "save it", and on a local
+    // build the upload never happens — without it the record would be
+    // assembled and thrown away, exactly as it always was.
+    const kept = keepLocalGameRecord({
+      gameStartInfo: this.lobbyConfig.gameStartInfo,
       players,
-      this.turns,
-      this.startedAt,
-      Date.now(),
-      this.winner?.winner,
-    );
+      turns: this.turns,
+      startedAt: this.startedAt,
+      endedAt: Date.now(),
+      winner: this.winner?.winner,
+    });
+    if (kept === null) return;
 
-    const result = PartialGameRecordSchema.safeParse(record);
-    if (!result.success) {
-      const error = z.prettifyError(result.error);
-      console.error("Error parsing game record", error);
-      return;
-    }
+    // A local-only build has no API to POST to and no session to POST with,
+    // so the record kept above is the destination instead of the server's.
+    if (isLocalMode()) return;
 
-    this.archiveGame(result.data, unloading);
+    this.archiveGame(kept, unloading);
   }
 
   private async archiveGame(

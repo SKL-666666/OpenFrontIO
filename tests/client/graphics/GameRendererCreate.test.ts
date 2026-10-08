@@ -28,6 +28,7 @@ const HUD_TAGS = [
   "win-modal",
   "new-lobby-prompt",
   "replay-panel",
+  "stats-chart",
   "game-right-sidebar",
   "settings-modal",
   "graphics-settings-modal",

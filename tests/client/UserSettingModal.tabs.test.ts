@@ -59,7 +59,12 @@ describe("user-setting tabs", () => {
     for (const tab of el.modalConfig().tabs ?? []) {
       expect(strings[`tab_${tab.key}`]).toBeTruthy();
     }
-    expect(strings.tab_graphics).toBe("Graphics");
+    // Not `toBe("Graphics")`: en.json is this fork's source file and is written
+    // in Simplified Chinese, so the English literal would assert a string that
+    // no longer exists. What matters is that the label is a real translation
+    // rather than the key itself leaking through.
+    expect(strings.tab_graphics).toBeTruthy();
+    expect(strings.tab_graphics).not.toBe("tab_graphics");
   });
 
   it("opens on the requested tab", async () => {

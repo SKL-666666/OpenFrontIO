@@ -16,6 +16,7 @@ import { modalHeader } from "./components/ui/ModalHeader";
 import { getPlayerCosmetics } from "./Cosmetics";
 import {
   generateRoomCode,
+  localRoomInviteHref,
   normalizeRoomCode,
   ROOM_CODE_LENGTH,
   roomToGameID,
@@ -26,6 +27,7 @@ import {
   LOCAL_ROOM_UPDATE,
   type LocalRoomSnapshot,
 } from "./local/LocalRoomState";
+import { PREFS, readPref, writePref } from "./LocalPrefs";
 import { JoinLobbyEvent } from "./Main";
 import { terrainMapFileLoader } from "./TerrainMapFileLoader";
 import {
@@ -86,10 +88,17 @@ export class LocalRoomModal extends BaseModal {
   protected routerName = "local-room";
 
   @state() private step: Step = "choose";
-  @state() private roomCode = "";
-  @state() private relayUrl = "";
+  @state() private roomCode = readPref<string>(PREFS.lastRoomCode, "");
+  // Remembered rather than typed every time: on a LAN the address is the same
+  // for every game, and forgetting it means a guest cannot rejoin without the
+  // host reading it out again.
+  @state() private relayUrl = readPref<string>(PREFS.lastRelayUrl, "");
   @state() private busy = false;
   @state() private error = "";
+  /** Join as a viewer: the room is seated, but this peer takes no turn. */
+  @state() private spectate = false;
+  /** Which copy button said "copied", for the moment it stays on. */
+  @state() private copied: "code" | "invite" | null = null;
   /** Room state while waiting, refreshed off every LOCAL_ROOM_UPDATE. */
   @state() private snapshot: LocalRoomSnapshot | null = null;
   /** True once join-lobby has been dispatched and the room is not yet over. */
@@ -117,17 +126,61 @@ export class LocalRoomModal extends BaseModal {
 
   private mapLoader = terrainMapFileLoader;
 
+  /**
+   * Put the host's settings back the way they were last time they were played.
+   *
+   * A local room is almost always the same handful of people playing the same
+   * kind of game, so reopening the dialog to a wall of defaults they will
+   * change again is the wrong default. `nations` is deliberately NOT restored:
+   * it is derived from the map (loadNationCount), and restoring a stale count
+   * would disagree with the map the rest of the fields just restored.
+   */
+  private restoreConfig(): void {
+    const saved = readPref<Record<string, unknown> | null>(
+      PREFS.localRoomConfig,
+      null,
+    );
+    if (saved === null || typeof saved !== "object") return;
+    for (const [k, v] of Object.entries(saved)) {
+      if (k in this) (this as Record<string, unknown>)[k] = v;
+    }
+  }
+
+  private saveConfig(): void {
+    writePref(PREFS.localRoomConfig, {
+      selectedMap: this.selectedMap,
+      useRandomMap: this.useRandomMap,
+      selectedDifficulty: this.selectedDifficulty,
+      gameMode: this.gameMode,
+      teamCount: this.teamCount,
+      bots: this.bots,
+      compactMap: this.compactMap,
+      instantBuild: this.instantBuild,
+      randomSpawn: this.randomSpawn,
+      infiniteGold: this.infiniteGold,
+      infiniteTroops: this.infiniteTroops,
+      waterNukes: this.waterNukes,
+      doomsdayClock: this.doomsdayClock,
+      doomsdayClockSpeed: this.doomsdayClockSpeed,
+    });
+  }
+
   connectedCallback() {
     super.connectedCallback();
     // Main reopens this dialog for a room named in the URL hash (see
     // handleLocalRoomHash), and a cold load has no click to hang the code off.
+    // The hash can carry a relay as well, so an LAN invite prefills everything.
     this.addEventListener("prefill-room-code", ((
-      e: CustomEvent<{ code: string }>,
+      e: CustomEvent<{ code: string; relay?: string | null }>,
     ) => {
       this.roomCode = e.detail.code;
+      if (typeof e.detail.relay === "string" && e.detail.relay !== "") {
+        this.relayUrl = e.detail.relay;
+      }
       this.step = "join";
     }) as EventListener);
     document.addEventListener(LOCAL_ROOM_UPDATE, this.handleRoomUpdate);
+    this.restoreConfig();
     void this.loadNationCount();
   }
 
@@ -185,10 +238,29 @@ export class LocalRoomModal extends BaseModal {
             title=${translateText("common.copy") || "Copy"}
             @click=${() => void this.copyCode()}
           >
-            ${this.roomCode}
+            ${this.copied === "code"
+              ? html`<span class="text-green-300 font-sans text-xl"
+                  >${translateText("local_room.copied") || "Copied"}</span
+                >`
+              : this.roomCode}
           </button>
           <span class="text-xs text-white/40">${snapshot.transport}</span>
         </div>
+
+        <!-- The whole way in: one link that carries the origin (which is what
+             identifies the host machine over a LAN) AND the room code AND the
+             relay. Handing someone three separate things to type is what made
+             joining a local game a chore. -->
+        <button
+          class="w-full rounded-xl border ${this.copied === "invite"
+            ? "border-green-500/50 bg-green-500/10 text-green-300"
+            : "border-blue-500/40 bg-blue-500/10 text-blue-200"} px-4 py-3 text-sm font-semibold hover:bg-blue-500/20 transition-colors"
+          @click=${() => void this.copyInvite()}
+        >
+          ${this.copied === "invite"
+            ? translateText("local_room.copied") || "Copied"
+            : translateText("local_room.copy_invite") || "Copy invite link"}
+        </button>
 
         <ul class="flex flex-col gap-2">
           ${snapshot.roster.map(
@@ -236,11 +308,44 @@ export class LocalRoomModal extends BaseModal {
   }
 
   private async copyCode() {
+    await this.writeClipboard(this.roomCode, "code");
+  }
+
+  /**
+   * Copy the link that opens this room already filled in.
+   *
+   * Everything a guest needs rides on it: the page's origin (which over a LAN
+   * IS the host machine's address), the room code, and the relay when the room
+   * has one. Opening it lands them on the join screen with all of it typed, so
+   * the only thing left to do is press Enter.
+   */
+  private async copyInvite() {
+    await this.writeClipboard(
+      localRoomInviteHref(this.roomCode, this.relayUrl),
+      "invite",
+    );
+  }
+
+  /**
+   * Copy `value`, then show `flag` for a moment so the button can say it worked.
+   *
+   * The failure path is not an error worth surfacing: file:// pages have no
+   * clipboard, and the value is on screen in a mono face either way — it is
+   * there to be selected by hand.
+   */
+  private async writeClipboard(
+    value: string,
+    flag: "code" | "invite",
+  ): Promise<void> {
     try {
-      await navigator.clipboard.writeText(this.roomCode);
+      await navigator.clipboard.writeText(value);
+      this.copied = flag;
+      window.setTimeout(() => {
+        if (this.copied === flag) this.copied = null;
+      }, 2000);
+      this.requestUpdate();
     } catch {
-      // file:// or no clipboard permission: the code is already on screen in a
-      // mono face and can be selected by hand.
+      // Clipboard unavailable; the text is already on screen.
     }
   }
 
@@ -357,6 +462,22 @@ export class LocalRoomModal extends BaseModal {
             this.error = "";
           }}
         ></o-button>
+        <!-- One click back into the room that was last played: the code and
+             relay were remembered on the way in, so this skips both forms. -->
+        ${this.roomCode !== ""
+          ? html`<button
+              class="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white/70 hover:bg-white/10 transition-colors"
+              @click=${() => {
+                this.step = "join";
+                this.error = "";
+              }}
+            >
+              ${translateText("local_room.rejoin_last") || "Rejoin last room"}
+              <span class="ml-2 font-mono text-blue-300 uppercase"
+                >${this.roomCode}</span
+              >
+            </button>`
+          : null}
         <p class="text-xs text-white/40">${HINT_TABS_ONLY}</p>
       </div>
     `;
@@ -385,7 +506,28 @@ export class LocalRoomModal extends BaseModal {
             placeholder=${CODE_PLACEHOLDER}
           />
         </label>
-        ${this.renderRelayField()} ${this.renderError()}
+        ${this.renderRelayField()}
+        <!-- Joining as a viewer keeps this peer out of the simulation: the
+             relay seats it but never gives it a turn, and the start message's
+             players array leaves it out — so a room can be watched without
+             changing what everyone else is playing. -->
+        <label
+          class="flex items-center gap-3 rounded-lg border border-white/10 bg-white/5 px-4 py-3 cursor-pointer"
+        >
+          <input
+            type="checkbox"
+            class="size-4 accent-blue-500 shrink-0"
+            .checked=${this.spectate}
+            @change=${(e: Event) => {
+              this.spectate = (e.target as HTMLInputElement).checked;
+            }}
+          />
+          <span class="text-sm text-white/80"
+            >${translateText("local_room.spectate") ||
+            "Join as a spectator"}</span
+          >
+        </label>
+        ${this.renderError()}
         <o-button
           variant="primary"
           width="block"
@@ -645,6 +787,13 @@ export class LocalRoomModal extends BaseModal {
     // that a local build has no API to answer.
     void getPlayerCosmetics().catch(() => undefined);
 
+    // Remember how this room was reached, so the next one is one click away:
+    // the address never changes across games on a LAN, and losing it means the
+    // host has to read it out again.
+    writePref(PREFS.lastRelayUrl, relayUrl ?? "");
+    writePref(PREFS.lastRoomCode, roomCode);
+    this.saveConfig();
+
     this.busy = true;
     // Show the waiting room from here rather than waiting for the room to
     // answer: Main's join path runs several awaits before the peer even
@@ -659,6 +808,7 @@ export class LocalRoomModal extends BaseModal {
           gameID: roomToGameID(roomCode),
           localRoom,
           source: "local-room",
+          spectator: this.spectate,
         } satisfies JoinLobbyEvent,
         bubbles: true,
         composed: true,

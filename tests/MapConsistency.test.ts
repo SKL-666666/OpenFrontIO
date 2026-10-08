@@ -375,22 +375,27 @@ describe("Map consistency", () => {
 
   // The en.json "map" section is generated from the info.json files.
   // If this test fails, run `npm run gen-maps` to regenerate it.
-  test("en.json map translations match info.json display names", () => {
+  //
+  // What is checked is the KEY SET in both directions, plus that each entry is
+  // present and non-empty — deliberately not that the value equals info.json's
+  // display name. en.json is this fork's source file and is written in Simplified
+  // Chinese, so that comparison would be pitting the map's English name against
+  // its Chinese one for every map in the game. `npm run gen-maps` still writes
+  // the English name, so it would also undo the translation; the map names here
+  // are maintained by hand in this fork.
+  test("en.json map translations cover every info.json map", () => {
     const enMapSection = getEnJsonMapSection();
     const errors: string[] = [];
     for (const key of allMapKeys) {
       const folder = toFolderName(key);
       const info = readInfoJson(key);
       if (info === null) continue; // Other tests catch missing files.
-      const expected = orOmitted(info.display_name) ?? info.name;
       if (enMapSection[folder] === undefined) {
         errors.push(
           `${key} (key "${folder}") is missing from en.json map translations`,
         );
-      } else if (enMapSection[folder] !== expected) {
-        errors.push(
-          `${key}: en.json map.${folder} is "${enMapSection[folder]}", but info.json says "${expected}"`,
-        );
+      } else if (String(enMapSection[folder]).trim().length === 0) {
+        errors.push(`${key}: en.json map.${folder} is empty`);
       }
     }
     const validKeys = new Set(allMapKeys.map((k) => toFolderName(k)));

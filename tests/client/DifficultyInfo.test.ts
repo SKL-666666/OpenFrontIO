@@ -126,8 +126,11 @@ describe("<difficulty-info>", () => {
     info.requestUpdate();
     await info.updateComplete;
 
+    // Compared against the composed expected string rather than a literal:
+    // en.json is this fork's source file and is written in Simplified Chinese,
+    // so the wording here belongs to the file, not to this test.
     expect(info.querySelector('[role="tooltip"]')?.textContent?.trim()).toBe(
-      "Dumb, 50% of a human's max troops",
+      expectedText(Difficulty.Easy),
     );
   });
 

@@ -193,12 +193,68 @@ export const roomToGameID = (code: string): GameID => code;
 /** Hash form of a room in the page URL: `#local-room=CODE`. */
 export const LOCAL_ROOM_HASH_PREFIX = "local-room=";
 
-/** The room code a URL hash names, or null if it names none. */
-export function localRoomCodeFromHash(hash: string): string | null {
+/** Hash form of the relay that room lives behind: `&relay=ws://…`. */
+export const LOCAL_ROOM_RELAY_PARAM = "relay";
+
+/**
+ * The room a URL hash names.
+ *
+ * Two values, not one, because a guest joining over the LAN needs both the code
+ * and somewhere to send their frames: a link carrying `relay` turns an invite
+ * into a single copy-paste instead of "here's the link, and also type this
+ * address". `relay` is optional — a room reached from another tab of this
+ * browser needs none.
+ *
+ * Parsed with URLSearchParams over the whole hash so `&` cannot leak into the
+ * code (a code containing `&` would never normalise, so the guest would be
+ * told the link was broken rather than sent to a room).
+ */
+export function localRoomParamsFromHash(hash: string): {
+  code: string | null;
+  relay: string | null;
+} {
   const raw = hash.startsWith("#") ? hash.slice(1) : hash;
   const at = raw.indexOf(LOCAL_ROOM_HASH_PREFIX);
-  if (at === -1) return null;
-  return normalizeRoomCode(raw.slice(at + LOCAL_ROOM_HASH_PREFIX.length));
+  if (at === -1) return { code: null, relay: null };
+
+  // Split before parsing: `ABCD2345&relay=ws://…` is not a key/value pair, and
+  // handing it whole to URLSearchParams would leave the `&` in the code, which
+  // can never normalise — the guest would be told the link was broken instead
+  // of being routed to the room.
+  const rest = raw.slice(at + LOCAL_ROOM_HASH_PREFIX.length);
+  const amp = rest.indexOf("&");
+  const codePart = amp === -1 ? rest : rest.slice(0, amp);
+  const relay =
+    amp === -1
+      ? null
+      : new URLSearchParams(rest.slice(amp + 1)).get(LOCAL_ROOM_RELAY_PARAM);
+  return { code: normalizeRoomCode(codePart), relay };
+}
+
+/** The room code a URL hash names, or null if it names none. */
+export function localRoomCodeFromHash(hash: string): string | null {
+  return localRoomParamsFromHash(hash).code;
+}
+
+/**
+ * The link to hand a player who should land in this room already filled in.
+ *
+ * Built from the page's own origin, so it is right for whichever way the room
+ * was reached: `localhost:9000` for a tab on this machine, `192.168.x.x:9000`
+ * when the host is serving over the LAN. The relay rides along only when the
+ * room actually uses one, keeping the common same-browser case a clean URL.
+ */
+export function localRoomInviteHref(
+  roomCode: string,
+  relayUrl: string,
+): string {
+  const base = `${window.location.origin}${window.location.pathname}`;
+  const relay = relayUrl.trim();
+  const suffix =
+    relay === ""
+      ? ""
+      : `&${LOCAL_ROOM_RELAY_PARAM}=${encodeURIComponent(relay)}`;
+  return `${base}#${LOCAL_ROOM_HASH_PREFIX}${roomCode}${suffix}`;
 }
 
 /**

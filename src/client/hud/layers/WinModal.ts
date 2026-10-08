@@ -1,4 +1,4 @@
-import { RankedType } from "@openfront/engine-api/game/GameTypes";
+import { GameType, RankedType } from "@openfront/engine-api/game/GameTypes";
 import { GameUpdateType } from "@openfront/engine-api/game/GameUpdates";
 import { Pattern } from "@openfront/shared/CosmeticSchemas";
 import { EventBus } from "@openfront/shared/EventBus";
@@ -25,7 +25,13 @@ import {
 } from "../../Cosmetics";
 import { crazyGamesSDK } from "../../CrazyGamesSDK";
 import { isDesktopShell } from "../../DesktopShell";
+import { isLocalMode } from "../../LocalMode";
+import { downloadGameRecord, getLastGameRecord } from "../../LocalReplay";
 import { Platform } from "../../Platform";
+// Static, not a dynamic import: ReplayEntry is already reached statically from
+// Main, JoinLobbyModal and ReplayViewer, so loading it on click would not move
+// it out of this chunk — only add a tick of asynchrony to the button.
+import { openReplayViewer } from "../../replay/ReplayEntry";
 import { PlaySoundEffectEvent } from "../../sound/Sounds";
 import { steamSDK } from "../../SteamSDK";
 import { SendWinnerEvent } from "../../Transport";
@@ -49,6 +55,24 @@ export class WinModal extends LitElement implements Controller {
 
   @state()
   private patternContent: TemplateResult | null = null;
+
+  /**
+   * "Play again" is offered only for a local singleplayer game: it replays the
+   * stored start info, so it needs one to exist, and it makes no sense for a
+   * LAN room (the host decides when the next one is) or a match.
+   */
+  @state()
+  private canRestart = false;
+
+  /**
+   * "Watch it back" / "Save it", offered once a record of this game exists.
+   *
+   * Set after the winner event rather than when the dialog opens, because the
+   * record is assembled as a consequence of that event — asking for it before
+   * would always find nothing.
+   */
+  @state()
+  private canArchive = false;
 
   private _title: string;
 
@@ -76,6 +100,47 @@ export class WinModal extends LitElement implements Controller {
         <div class="min-h-0 flex-1 overflow-y-auto pr-0.5">
           ${this.innerHtml()}
         </div>
+        <!--
+          Local-build actions. They sit in their own row because the existing
+          row already runs to three buttons when a ranked game offers a requeue,
+          and five across is unusable on the phone-width dialog this is sized
+          for. Shown only when they have something to act on: a room has no
+          record (each peer could only archive its own view), and a game that
+          has not ended has nothing to replay.
+        -->
+        ${this.canRestart || this.canArchive
+          ? html`<div class="mt-4 flex flex-wrap gap-2.5 shrink-0">
+              ${this.canRestart
+                ? html`
+                    <o-button
+                      variant="secondary"
+                      width="block"
+                      class="flex-1"
+                      translationKey="win_modal.play_again"
+                      @click=${this._handleRestart}
+                    ></o-button>
+                  `
+                : null}
+              ${this.canArchive
+                ? html`
+                    <o-button
+                      variant="secondary"
+                      width="block"
+                      class="flex-1"
+                      translationKey="win_modal.replay"
+                      @click=${this._handleReplay}
+                    ></o-button>
+                    <o-button
+                      variant="secondary"
+                      width="block"
+                      class="flex-1"
+                      translationKey="win_modal.save"
+                      @click=${this._handleSave}
+                    ></o-button>
+                  `
+                : null}
+            </div>`
+          : null}
         <div class="mt-4 flex justify-between gap-2.5 shrink-0">
           <o-button
             variant="primary"
@@ -264,6 +329,16 @@ export class WinModal extends LitElement implements Controller {
     crazyGamesSDK.gameplayStop();
     this.isRankedGame =
       this.game.config().gameConfig().rankedType !== undefined;
+    // Set before the cosmetic fetch below: that path can return early, and
+    // these two are read from the render that follows either way.
+    //
+    // canArchive is checked only now because the record is a consequence of
+    // the winner event that precedes every call to show() — on a death dialog
+    // nothing has ended yet and there is correctly nothing to save.
+    this.canRestart =
+      isLocalMode() &&
+      this.game.config().gameConfig().gameType === GameType.Singleplayer;
+    this.canArchive = isLocalMode() && getLastGameRecord() !== null;
     this.isVisible = true;
     this.requestUpdate();
     try {
@@ -302,7 +377,69 @@ export class WinModal extends LitElement implements Controller {
     );
   }
 
-  init() {}
+  /**
+   * Start the same singleplayer game over.
+   *
+   * Typed structurally rather than imported: `SinglePlayerModal` pulls in the
+   * whole menu, which pulls in Main, which owns the `join-lobby` path it
+   * dispatches back into — importing it here would close a cycle through this
+   * very file. The element is a singleton in index.html, so the query is the
+   * whole lookup.
+   */
+  private _handleRestart(): void {
+    this.hide();
+    const modal = document.querySelector("single-player-modal") as unknown as {
+      restartLastGame?: () => Promise<boolean>;
+    } | null;
+    const restart = modal?.restartLastGame;
+    if (restart === undefined) {
+      console.warn("local: no singleplayer modal to restart from");
+      return;
+    }
+    void restart.call(modal).then((started) => {
+      if (!started) console.warn("local: nothing to restart");
+    });
+  }
+
+  /**
+   * Open this game in the replay viewer.
+   *
+   * `openReplayViewer` hands the record over in-process, so nothing is fetched:
+   * the viewer is fed by the same object the win screen just read.
+   */
+  private _handleReplay(): void {
+    const record = getLastGameRecord();
+    this.hide();
+    if (record === null) {
+      console.warn("local: no record to replay");
+      return;
+    }
+    if (!openReplayViewer(record.info.gameID, record)) {
+      console.warn("local: replay viewer unavailable");
+    }
+  }
+
+  /** Write the record to disk as a `.json` the viewer can open later. */
+  private _handleSave(): void {
+    const record = getLastGameRecord();
+    if (record === null) {
+      console.warn("local: no record to save");
+      return;
+    }
+    downloadGameRecord(record);
+  }
+
+  init() {
+    // The modal element is a singleton across the whole page, but a game is
+    // not: without this, a restart in place would carry the previous game's
+    // death modal and victory flag into the next one and show it immediately.
+    this.hasShownDeathModal = false;
+    this.isVisible = false;
+    this.isWin = false;
+    this.canRestart = false;
+    this.canArchive = false;
+    this._title = "";
+  }
 
   tick() {
     const myPlayer = this.game.myPlayer();

@@ -27,6 +27,10 @@ import {
   PeerRelayServer,
 } from "../../src/client/local/PeerRelayServer";
 import { resetLocalModeCache } from "../../src/client/LocalMode";
+import {
+  clearLastGameRecord,
+  getLastGameRecord,
+} from "../../src/client/LocalReplay";
 
 /**
  * The room code is also the game id, so it has to satisfy GAME_ID_REGEX
@@ -590,6 +594,72 @@ describe("LocalPeer", () => {
     });
     expect(received.filter((m) => m.type === "lobby_info")).toHaveLength(0);
     guest.endGame();
+  });
+
+  it("keeps a record of the game it was dealt, for the win screen", () => {
+    const peer = connect(roomConfig());
+    join(peer);
+    clearLastGameRecord();
+    // The record carries the build's own commit, and the schema only accepts
+    // a real 40-hex sha or the literal "DEV" — neither of which this file's
+    // bootstrap config ("test") is. The offline build sets DEV, so that is
+    // what the shape under test has to be exercised with.
+    (window as { BOOTSTRAP_CONFIG?: unknown }).BOOTSTRAP_CONFIG = {
+      ...(window.BOOTSTRAP_CONFIG as object),
+      gitCommit: "DEV",
+    };
+    ClientEnv.reset();
+
+    hub.inject({
+      k: "start",
+      author: RELAY_AUTHOR,
+      gameStartInfo: {
+        gameID: "ABCD2345",
+        lobbyCreatedAt: 1,
+        config: roomConfig().config,
+        players: [{ clientID: peer.clientID, username: "Ada", clanTag: null }],
+      },
+    });
+    // createPartialGameRecord drops turns that carry neither intents nor a
+    // hash, so these are hashed the way a real turn of a real game is.
+    hub.inject({
+      k: "turn",
+      author: RELAY_AUTHOR,
+      turn: { turnNumber: 0, intents: [], hash: 101 },
+    });
+    hub.inject({
+      k: "turn",
+      author: RELAY_AUTHOR,
+      turn: { turnNumber: 1, intents: [], hash: 102 },
+    });
+
+    // Every player's stats are required by the record's schema, and they only
+    // arrive with the winner — so nothing can have been kept yet.
+    expect(getLastGameRecord()).toBeNull();
+
+    peer.onMessage({
+      type: "winner",
+      winner: ["player", peer.clientID],
+      allPlayersStats: { [peer.clientID]: {} },
+    } as never);
+
+    const record = getLastGameRecord();
+    expect(record).not.toBeNull();
+    if (record === null) throw new Error("unreachable");
+    expect(record.info.gameID).toBe("ABCD2345");
+    expect(record.turns).toHaveLength(2);
+    expect(record.info.players).toHaveLength(1);
+    expect(record.info.players[0].clientID).toBe(peer.clientID);
+
+    // A second winner would publish a record built from a turn list this peer
+    // is still appending to.
+    peer.onMessage({
+      type: "winner",
+      winner: ["player", peer.clientID],
+      allPlayersStats: { [peer.clientID]: {} },
+    } as never);
+    expect(getLastGameRecord()?.turns).toHaveLength(2);
+    peer.endGame();
   });
 });
 

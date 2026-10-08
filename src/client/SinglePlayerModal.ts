@@ -12,7 +12,10 @@ import { DoomsdayClockSpeed } from "@openfront/engine-lib/game/DoomsdayClock";
 import { UserMeResponse } from "@openfront/shared/ApiSchemas";
 import { assetUrl } from "@openfront/shared/AssetUrls";
 import { generateID } from "@openfront/shared/SharedUtil";
-import { PlayerCosmetics } from "@openfront/shared/WireSchemas";
+import {
+  PlayerCosmetics,
+  WireGameStartInfo,
+} from "@openfront/shared/WireSchemas";
 import { html, TemplateResult } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { translateText } from "../client/Utils";
@@ -30,6 +33,12 @@ import { GameStartingModal } from "./GameStartingModal";
 import { showInGameAlert } from "./InGameModal";
 import { JoinLobbyEvent } from "./Main";
 import { fallbackPlayerName, ResolvedPlayerName } from "./PlayerName";
+import {
+  clearSinglePlayerPreset,
+  readSinglePlayerPreset,
+  SinglePlayerPreset,
+  writeSinglePlayerPreset,
+} from "./SinglePlayerPreset";
 import { UsernameInput } from "./UsernameInput";
 import { UserSettings } from "./UserSettings";
 import {
@@ -215,12 +224,38 @@ export class SinglePlayerModal extends BaseModal {
   // nothing visible until every await in startGame() settles, which reads as
   // a hang rather than as loading whenever the network is slow or absent.
   @state() private starting: boolean = false;
+  /**
+   * Whether this open came back from a saved preset rather than from defaults.
+   *
+   * Drives the footer's hint and the control that drops the saved form — the
+   * only way back to the stock configuration, since every field of it is
+   * otherwise remembered.
+   */
+  @state() private restoredPreset: boolean = false;
   // Identifies the current start attempt. Bumped on every start and on every
   // close, so an attempt that outlives its modal can tell it has been retired.
   private startAttempt: number = 0;
   // Which attempt the starting overlay is up for, so a retired attempt's
   // cleanup cannot hide the overlay a newer attempt has shown.
   private overlayAttempt: number = 0;
+  /**
+   * What the last game was actually started with.
+   *
+   * Deliberately outside the settings the form owns: `resetOptions()` wipes all
+   * of them the moment this modal closes, and it closes on every start — so
+   * without a copy here, "play again" would have nothing to replay and would
+   * restart on defaults instead of the game the player just finished.
+   */
+  private lastStarted: WireGameStartInfo | null = null;
+
+  /**
+   * Which saved preset this form is currently showing, if any.
+   *
+   * Bumped every time the form is reset or a preset is applied, so a nation
+   * count still being derived from the map manifest cannot land on a form that
+   * has since been closed, reset, or reopened onto something else.
+   */
+  private presetEpoch: number = 0;
 
   private mapLoader = terrainMapFileLoader;
 
@@ -579,6 +614,22 @@ export class SinglePlayerModal extends BaseModal {
                 ${translateText("single_modal.options_changed_no_achievements")}
               </div>`
             : null}
+          ${this.restoredPreset
+            ? html`<div
+                class="mb-3 flex items-center justify-between gap-3 text-xs text-white/50"
+              >
+                <span class="min-w-0 truncate"
+                  >${translateText("single_modal.restored_hint")}</span
+                >
+                <button
+                  type="button"
+                  class="shrink-0 text-white/70 underline underline-offset-2 transition-colors hover:text-white"
+                  @click=${this.handleResetToDefaults}
+                >
+                  ${translateText("single_modal.reset_to_defaults")}
+                </button>
+              </div>`
+            : null}
           <o-button
             variant="primary"
             width="block"
@@ -658,12 +709,130 @@ export class SinglePlayerModal extends BaseModal {
     await this.startGame();
   }
 
+  /**
+   * Start the last game again, with exactly the settings it was played with.
+   *
+   * Called from the win screen's "play again", not through the form — the form
+   * has already been wiped (it resets on close, and it closes on every start),
+   * so reopening it would put the player back at the defaults instead of at the
+   * game they just lost. `lastStarted` is the only record of it.
+   *
+   * Dispatches rather than calling `startGame()` for the same reason: replaying
+   * the stored start info verbatim cannot drift from what was played, whereas
+   * rebuilding it from the (now-defaulted) form fields would.
+   *
+   * @returns false when there is nothing to repeat — no local game has been
+   * started in this page yet.
+   */
+  public async restartLastGame(): Promise<boolean> {
+    if (this.lastStarted === null || this.starting) return false;
+    this.starting = true;
+    const attempt = ++this.startAttempt;
+    try {
+      // The name and cosmetics are re-resolved rather than reused: the player
+      // may have changed them since, and a restart is a new game in that sense.
+      void prewarmCosmetics();
+      const clientID = generateID();
+      const gameID = generateID();
+      const usernameInput = document.querySelector(
+        "username-input",
+      ) as UsernameInput | null;
+      const { resolvedName, cosmetics } =
+        await this.resolveNameAndCosmetics(usernameInput);
+      if (attempt !== this.startAttempt) return false;
+
+      const gameStartInfo: WireGameStartInfo = {
+        ...this.lastStarted,
+        gameID,
+        players: [
+          {
+            clientID,
+            username: resolvedName.name,
+            clanTag: usernameInput?.getClanTag() ?? null,
+            cosmetics,
+          },
+        ],
+        lobbyCreatedAt: Date.now(),
+      };
+
+      this.dispatchEvent(
+        new CustomEvent("join-lobby", {
+          detail: {
+            gameID,
+            gameStartInfo,
+            source: "singleplayer",
+          } satisfies JoinLobbyEvent,
+          bubbles: true,
+          composed: true,
+        }),
+      );
+      return true;
+    } finally {
+      if (attempt === this.startAttempt) this.starting = false;
+    }
+  }
+
+  /**
+   * Replay a saved form over the one `resetOptions()` just cleared.
+   *
+   * Only fields that survived type checking in `readSinglePlayerPreset()` are
+   * present, and one that did not is *absent* rather than undefined — so this
+   * is a plain overwrite of what was proven good, and the rest keeps the
+   * default it was just reset to.
+   */
+  private applyPreset(preset: Partial<SinglePlayerPreset>): void {
+    Object.assign(this, preset);
+  }
+
+  /**
+   * The form as it stands, for the next open.
+   *
+   * Written on start rather than on close: closing is not choosing, and an
+   * edit the player abandoned halfway should not be what the next game
+   * launches with.
+   */
+  private snapshotPreset(): SinglePlayerPreset {
+    return {
+      selectedMap: this.selectedMap,
+      selectedDifficulty: this.selectedDifficulty,
+      useRandomMap: this.useRandomMap,
+      gameMode: this.gameMode,
+      teamCount: this.teamCount,
+      bots: this.bots,
+      nations: this.nations,
+      infiniteGold: this.infiniteGold,
+      infiniteTroops: this.infiniteTroops,
+      compactMap: this.compactMap,
+      maxTimer: this.maxTimer,
+      maxTimerValue: this.maxTimerValue,
+      instantBuild: this.instantBuild,
+      randomSpawn: this.randomSpawn,
+      disabledUnits: [...this.disabledUnits],
+      goldMultiplier: this.goldMultiplier,
+      goldMultiplierValue: this.goldMultiplierValue,
+      startingGold: this.startingGold,
+      startingGoldValue: this.startingGoldValue,
+      customAlliances: this.customAlliances,
+      customAllianceMinutes: this.customAllianceMinutes,
+      waterNukes: this.waterNukes,
+      doomsdayClock: this.doomsdayClock,
+      doomsdayClockSpeed: this.doomsdayClockSpeed,
+      overtime: this.overtime,
+      overtimeStartMinutes: this.overtimeStartMinutes,
+    };
+  }
+
   // Reset all transient form state to ensure clean slate
   private resetOptions(): void {
+    // Retires any preset still being applied: its nation count resolves after
+    // the map manifest loads, and that is too late for a form this close has
+    // already emptied.
+    this.presetEpoch++;
     // Belt and braces with the finally in startGame(): closing and reopening
     // the modal must always give the player a live Start button back, whatever
     // left the previous attempt in flight.
     this.starting = false;
+    this.restoredPreset = false;
     this.selectedMap = DEFAULT_OPTIONS.selectedMap;
     this.selectedDifficulty = DEFAULT_OPTIONS.selectedDifficulty;
     this.gameMode = DEFAULT_OPTIONS.gameMode;
@@ -694,7 +863,20 @@ export class SinglePlayerModal extends BaseModal {
   }
 
   protected onOpen(): void {
-    void this.loadNationCount();
+    // Restore before loading the nation count, so the manifest is read for
+    // the map the player actually played last time rather than for the
+    // default one.
+    const epoch = ++this.presetEpoch;
+    const preset = readSinglePlayerPreset();
+    this.applyPreset(preset);
+    this.restoredPreset = Object.keys(preset).length > 0;
+    void this.loadNationCount().then(() => {
+      // loadNationCount derives the slider position from the manifest, which
+      // overwrites the saved value it was just given. Only put it back if
+      // this open is still the one that asked for it.
+      if (epoch !== this.presetEpoch) return;
+      if (preset.nations !== undefined) this.nations = preset.nations;
+    });
     // Spend the cosmetics round trip while the player is picking a map, not
     // after they commit. startGame() still resolves cosmetics properly; this
     // only moves the network time off the click, for the slow-but-reachable
@@ -703,6 +885,19 @@ export class SinglePlayerModal extends BaseModal {
     // attempt. Remembering an unreachable backend is OPE-403.
     void prewarmCosmetics();
   }
+
+  /**
+   * Forget the saved form and go back to the stock one.
+   *
+   * The way back to defaults: without it a player who once started a game
+   * with a non-default setup has no way to clear it — closing only wipes the
+   * form for the session, and the next open would restore it again.
+   */
+  private handleResetToDefaults = (): void => {
+    clearSinglePlayerPreset();
+    this.resetOptions();
+    void this.loadNationCount();
+  };
 
   private handleSelectRandomMap() {
     this.useRandomMap = true;
@@ -1117,78 +1312,82 @@ export class SinglePlayerModal extends BaseModal {
       // The ad is long enough that the modal can be closed while it runs.
       if (attempt !== this.startAttempt) return;
 
+      const gameStartInfo: WireGameStartInfo = {
+        gameID: gameID,
+        players: [
+          {
+            clientID,
+            username: resolvedName.name,
+            clanTag: usernameInput?.getClanTag() ?? null,
+            cosmetics,
+          },
+        ],
+        config: {
+          gameMap: this.selectedMap,
+          gameMapSize: this.compactMap
+            ? GameMapSize.Compact
+            : GameMapSize.Normal,
+          gameType: GameType.Singleplayer,
+          gameMode: this.gameMode,
+          playerTeams: this.teamCount,
+          difficulty: this.selectedDifficulty,
+          maxTimerValue: finalMaxTimerValue,
+          bots: this.bots,
+          infiniteGold: this.infiniteGold,
+          donateGold: this.gameMode === GameMode.Team,
+          donateTroops: this.gameMode === GameMode.Team,
+          infiniteTroops: this.infiniteTroops,
+          instantBuild: this.instantBuild,
+          randomSpawn: this.randomSpawn,
+          disabledUnits: this.disabledUnits.filter((unit): unit is UnitType =>
+            Object.values(UnitType).includes(unit),
+          ),
+          nations: sliderToNationsConfig(this.nations, this.defaultNationCount),
+          ...(this.goldMultiplier && this.goldMultiplierValue
+            ? { goldMultiplier: this.goldMultiplierValue }
+            : {}),
+          ...(this.startingGold && this.startingGoldValue !== undefined
+            ? {
+                startingGold: Math.round(this.startingGoldValue * 1_000_000),
+              }
+            : {}),
+          ...(this.customAlliances
+            ? { customAllianceDuration: this.customAllianceMinutes ?? 0 }
+            : {}),
+          ...(this.waterNukes ? { waterNukes: true } : {}),
+          ...(this.doomsdayClock
+            ? {
+                doomsdayClock: {
+                  enabled: true,
+                  speed: this.doomsdayClockSpeed,
+                },
+              }
+            : {}),
+          ...(this.overtime
+            ? {
+                overtime: {
+                  enabled: true,
+                  startMinutes: this.overtimeStartMinutes ?? 30,
+                },
+              }
+            : {}),
+        },
+        lobbyCreatedAt: Date.now(), // ms; server should be authoritative in MP
+      };
+      // Remember what was actually played. This is the ONLY copy: resetOptions()
+      // wipes the form when the modal closes (which it does right below), so
+      // the settings a player chose survive nowhere else.
+      this.lastStarted = gameStartInfo;
+      // And remember them across sessions, not just across this page's
+      // lifetime — written here rather than in onClose so an abandoned edit
+      // is not what the next game launches with.
+      writeSinglePlayerPreset(this.snapshotPreset());
+
       this.dispatchEvent(
         new CustomEvent("join-lobby", {
           detail: {
             gameID: gameID,
-            gameStartInfo: {
-              gameID: gameID,
-              players: [
-                {
-                  clientID,
-                  username: resolvedName.name,
-                  clanTag: usernameInput?.getClanTag() ?? null,
-                  cosmetics,
-                },
-              ],
-              config: {
-                gameMap: this.selectedMap,
-                gameMapSize: this.compactMap
-                  ? GameMapSize.Compact
-                  : GameMapSize.Normal,
-                gameType: GameType.Singleplayer,
-                gameMode: this.gameMode,
-                playerTeams: this.teamCount,
-                difficulty: this.selectedDifficulty,
-                maxTimerValue: finalMaxTimerValue,
-                bots: this.bots,
-                infiniteGold: this.infiniteGold,
-                donateGold: this.gameMode === GameMode.Team,
-                donateTroops: this.gameMode === GameMode.Team,
-                infiniteTroops: this.infiniteTroops,
-                instantBuild: this.instantBuild,
-                randomSpawn: this.randomSpawn,
-                disabledUnits: this.disabledUnits.filter(
-                  (unit): unit is UnitType =>
-                    Object.values(UnitType).includes(unit),
-                ),
-                nations: sliderToNationsConfig(
-                  this.nations,
-                  this.defaultNationCount,
-                ),
-                ...(this.goldMultiplier && this.goldMultiplierValue
-                  ? { goldMultiplier: this.goldMultiplierValue }
-                  : {}),
-                ...(this.startingGold && this.startingGoldValue !== undefined
-                  ? {
-                      startingGold: Math.round(
-                        this.startingGoldValue * 1_000_000,
-                      ),
-                    }
-                  : {}),
-                ...(this.customAlliances
-                  ? { customAllianceDuration: this.customAllianceMinutes ?? 0 }
-                  : {}),
-                ...(this.waterNukes ? { waterNukes: true } : {}),
-                ...(this.doomsdayClock
-                  ? {
-                      doomsdayClock: {
-                        enabled: true,
-                        speed: this.doomsdayClockSpeed,
-                      },
-                    }
-                  : {}),
-                ...(this.overtime
-                  ? {
-                      overtime: {
-                        enabled: true,
-                        startMinutes: this.overtimeStartMinutes ?? 30,
-                      },
-                    }
-                  : {}),
-              },
-              lobbyCreatedAt: Date.now(), // ms; server should be authoritative in MP
-            },
+            gameStartInfo,
             source: "singleplayer",
           } satisfies JoinLobbyEvent,
           bubbles: true,

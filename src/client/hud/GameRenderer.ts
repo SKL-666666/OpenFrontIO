@@ -42,6 +42,7 @@ import { PlayerPanel } from "./layers/PlayerPanel";
 import { ReplayPanel } from "./layers/ReplayPanel";
 import { SettingsModal } from "./layers/SettingsModal";
 import { SpawnTimer } from "./layers/SpawnTimer";
+import { StatsChart } from "./layers/StatsChart";
 import { TutorialPanel } from "./layers/TutorialPanel";
 import { UnitDisplay } from "./layers/UnitDisplay";
 import { WinModal } from "./layers/WinModal";
@@ -175,6 +176,13 @@ export function createRenderer(
   }
   replayPanel.eventBus = eventBus;
   replayPanel.game = game;
+
+  const statsChart = document.querySelector("stats-chart") as StatsChart;
+  if (!(statsChart instanceof StatsChart)) {
+    console.error("stats chart not found");
+  }
+  statsChart.eventBus = eventBus;
+  statsChart.game = game;
 
   const gameRightSidebar = document.querySelector(
     "game-right-sidebar",
@@ -355,6 +363,7 @@ export function createRenderer(
     winModal,
     newLobbyPrompt,
     replayPanel,
+    statsChart,
     settingsModal,
     playerPanel,
     headsUpMessage,

@@ -242,7 +242,12 @@ describe("Client.initialize() booted from Main.ts module scope", () => {
     // listener, join-lobby listener and slider wiring are all in place.
     await vi.waitFor(() => expect(mocks.userAuth).toHaveBeenCalled());
     await new Promise((resolve) => setTimeout(resolve, 25));
-  }, 20_000);
+    // No timeout of its own: the config sets hookTimeout for the suite. This
+    // hook is the worst case in it — it awaits an import of the whole client
+    // graph, and the time is spent transforming that graph in a worker sharing
+    // the machine with the rest of the run, which is why it sat right against
+    // its old 20s ceiling (19.8s alone, over it under load).
+  });
 
   it("runs the signed-out boot: onUserMe(false) and the missing-version warn", () => {
     // renderNavVersion() === 0 branch (line 411).

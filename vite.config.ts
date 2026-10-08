@@ -329,6 +329,18 @@ export default defineConfig(({ mode }) => {
       // test workers so jsdom always provides it. No-op on Node 24, which keeps
       // Web Storage behind a flag.
       execArgv: ["--no-experimental-webstorage"],
+      // Hang guards, not performance budgets.
+      //
+      // Several suites boot the whole client — MainInitialize imports
+      // src/client/Main, which pulls every module in the graph — so their cost
+      // is dominated by transforming that graph in a worker sharing the machine
+      // with the rest of the run. Measured on its own that hook sits around
+      // 20-30s against a default ceiling of 10s, and it climbs well past a
+      // minute under a full run's load. What the limit is guarding against is
+      // a boot that never settles; a budget that tight turns a slow machine
+      // into a red suite instead of catching a hang.
+      hookTimeout: 180_000,
+      testTimeout: 60_000,
       // Git worktrees live inside the repo, so their tests match the default
       // glob and run against that worktree's own (often stale) source and
       // node_modules. Anyone with a worktree checked out sees failures that

@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedCosmetic } from "../../src/client/Cosmetics";
 import "../../src/client/LangSelector";
@@ -8,6 +10,21 @@ import {
   cosmeticDisplayName,
   cosmeticRarityLabel,
 } from "../../src/client/components/CosmeticPresentation";
+
+/**
+ * The source file this fork renders from.
+ *
+ * Read rather than spelled out: en.json is Simplified Chinese here, so
+ * "Equipped" is no longer what `inventory.equipped` resolves to. The fr
+ * assertions further down are the real proof that a language switch re-renders
+ * these labels — they pin a language file this fork does not translate.
+ */
+const en = JSON.parse(
+  fs.readFileSync(
+    path.join(__dirname, "..", "..", "resources", "lang", "en.json"),
+    "utf8",
+  ),
+);
 
 const rarePattern: ResolvedCosmetic = {
   type: "pattern",
@@ -96,10 +113,15 @@ describe("cosmetic presentation localization", () => {
 
     await card.updateComplete;
 
+    // Compared against what en.json resolves the key to, not an English
+    // literal: this fork's source file is Simplified Chinese, so
+    // "Equipped" is no longer what `inventory.equipped` renders. The fr
+    // assertions below are what actually prove a live switch re-renders
+    // these labels, and fr.json is untouched here.
     expect(
       card.querySelector("[data-cosmetic-equipped]")?.textContent,
-    ).toContain("Equipped");
-    expect(cosmeticRarityLabel(rarePattern)).toContain("Rare");
+    ).toContain(en.inventory.equipped);
+    expect(cosmeticRarityLabel(rarePattern)).toContain(en.cosmetics.rare);
 
     window.dispatchEvent(
       new CustomEvent("language-selected", { detail: { lang: "fr" } }),

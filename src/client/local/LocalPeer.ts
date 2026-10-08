@@ -1,11 +1,19 @@
 import {
+  AllPlayersStats,
   ClientID,
   GameConfigSchema,
   GameID,
+  Turn,
+  Winner,
 } from "@openfront/engine-api/Schemas";
-import { ClientMessage, ServerMessage } from "@openfront/shared/WireSchemas";
+import {
+  ClientMessage,
+  ServerMessage,
+  WireGameStartInfo,
+} from "@openfront/shared/WireSchemas";
 import { z } from "zod";
 import { getPersistentID } from "../Auth";
+import { keepLocalGameRecord } from "../LocalReplay";
 import { HubFrame, LocalHubSet, RELAY_AUTHOR } from "./LocalHub";
 import {
   activeLocalPeer,
@@ -103,6 +111,30 @@ export class LocalPeer {
 
   /** The turn currently being processed, or -1 before the first one arrives. */
   private currentTurn = -1;
+
+  /**
+   * This peer's own copy of the game, kept so the win screen can offer to
+   * watch it back or save it.
+   *
+   * A LAN room has no `LocalServer` to accumulate them: the relay seals one
+   * turn and broadcasts it to the room, and every peer runs it. So each peer
+   * deals itself the same turns a server would have, and builds the same
+   * record from them — a singleplayer game and a LAN game are indistinguishable
+   * to the replay reader.
+   */
+  private turns: Turn[] = [];
+  private gameStartInfo: WireGameStartInfo | null = null;
+  private startedAt = 0;
+  private winner: Winner | null = null;
+  private allPlayersStats: AllPlayersStats = {};
+  /**
+   * The record has already been kept for this game, or could not be.
+   *
+   * Guarding rather than overwriting: the win message can arrive more than
+   * once (a re-run of the same deterministic check), and the second one must
+   * not publish a record built from a turn list still being appended to.
+   */
+  private keptRecord = false;
 
   /**
    * The last roster broadcast, for a guest: only the host runs a relay, so a
@@ -281,6 +313,13 @@ export class LocalPeer {
         });
         return;
       case "winner":
+        // The one moment the record can be assembled: `stats` is required
+        // per player, and this is the message that carries them. The relay
+        // does not broadcast it back, so this peer would otherwise never see
+        // what its own turn list was for.
+        this.winner = message.winner;
+        this.allPlayersStats = message.allPlayersStats;
+        this.keepRecord();
         this.hub.send({
           k: "winner",
           author: this.peerId,
@@ -339,6 +378,46 @@ export class LocalPeer {
     });
   }
 
+  /**
+   * Publish the record of this room's game, so the win screen can offer to
+   * watch it back or save it.
+   *
+   * At the winner and only once, for two reasons. `PlayerRecord.stats` is
+   * required by the record's schema and the winner message is the only place
+   * it arrives; and a record cut short of the last turn would be a replay
+   * that stops early. A game nobody won has no stats and so leaves no record,
+   * which is the same outcome a singleplayer game abandoned before it was
+   * decided has.
+   */
+  private keepRecord(): void {
+    if (this.keptRecord) return;
+    const info = this.gameStartInfo;
+    if (info === null) return;
+    const stats = this.allPlayersStats[this.myClientID];
+    const me = info.players.find((p) => p.clientID === this.myClientID);
+    // A spectator sits in no roster slot and has no stats of its own, so
+    // there is no game of its own to record either.
+    if (stats === undefined || me === undefined) return;
+    this.keptRecord = true;
+    keepLocalGameRecord({
+      gameStartInfo: info,
+      players: [
+        {
+          persistentID: this.peerId,
+          username: me.username ?? this.username,
+          clanTag: me.clanTag ?? this.clanTag,
+          clientID: this.myClientID,
+          stats,
+          cosmetics: me.cosmetics,
+        },
+      ],
+      turns: this.turns,
+      startedAt: this.startedAt,
+      endedAt: Date.now(),
+      winner: this.winner ?? undefined,
+    });
+  }
+
   // ---------------------------------------------------------------------------
   // Room -> client
   // ---------------------------------------------------------------------------
@@ -379,6 +458,14 @@ export class LocalPeer {
       case "start":
         this.currentTurn = -1;
         this.gameStarted = true;
+        // New game: whatever this peer held for the last one is no longer
+        // readable as a record of this one.
+        this.gameStartInfo = frame.gameStartInfo;
+        this.startedAt = Date.now();
+        this.turns = [];
+        this.winner = null;
+        this.allPlayersStats = {};
+        this.keptRecord = false;
         notifyLocalRoomUpdate("start");
         this.clientMessage?.({
           type: "start",
@@ -390,6 +477,7 @@ export class LocalPeer {
         return;
       case "turn":
         this.currentTurn = frame.turn.turnNumber;
+        this.turns.push(frame.turn);
         this.clientMessage?.({
           type: "turn",
           turn: frame.turn,

@@ -25,6 +25,13 @@ function setBootstrapConfig() {
 
 beforeEach(async () => {
   setBootstrapConfig();
+  // logOut() POSTs /auth/logout; keep the harness off the network. Without
+  // this the call does not fail fast on a machine with no route out — it sits
+  // in undici's connect timeout, which is long enough to blow through the hook
+  // timeout and take the suite red for a reason it never tests. logOut() runs
+  // clearLocalSession() in its finally either way, so what comes back does not
+  // change the state these tests assert on.
+  vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
   await logOut();
   vi.restoreAllMocks();
 });

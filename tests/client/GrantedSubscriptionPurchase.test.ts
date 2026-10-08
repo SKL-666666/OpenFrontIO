@@ -538,16 +538,29 @@ describe("the granted-purchase confirm strings read correctly", () => {
   const render = (key: string, params: Record<string, unknown>) =>
     new IntlMessageFormat(store[key], "en").format(params) as string;
 
-  it("agrees in number when a single day is left", () => {
-    expect(
-      render("confirm_subscribe_over_grant", { tier: "Gold", days: 1 }),
-    ).toContain("the 1 day left on it is not refunded");
+  it("substitutes the count when a single day is left", () => {
+    const out = render("confirm_subscribe_over_grant", {
+      tier: "Gold",
+      days: 1,
+    });
+    // The ICU plural has to take the 1 branch. en.json is this fork's source
+    // file and is Simplified Chinese, which has no singular/plural split, so
+    // the wording can no longer be pinned — what is pinned is the substitution
+    // itself, because a message that renders `{days}` is the same defect the
+    // English check was catching from the other side.
+    expect(out).toContain("1");
+    expect(out).not.toContain("{days}");
+    expect(out).not.toContain("{tier}");
   });
 
-  it("agrees in number for more than one day", () => {
-    expect(
-      render("confirm_subscribe_over_grant", { tier: "Gold", days: 28 }),
-    ).toContain("the 28 days left on it are not refunded");
+  it("substitutes the count for more than one day", () => {
+    const out = render("confirm_subscribe_over_grant", {
+      tier: "Gold",
+      days: 28,
+    });
+    expect(out).toContain("28");
+    expect(out).not.toContain("{days}");
+    expect(out).not.toContain("{tier}");
   });
 
   it("never calls a grant a month: an admin comp is open-ended", () => {

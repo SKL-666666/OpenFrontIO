@@ -100,6 +100,12 @@ describe("QuickChat phrases", () => {
     return typeof group === "object" ? group[key] : undefined;
   }
 
+  // The wording each phrase shipped with is kept in this table, but it is no
+  // longer compared against en.json: en.json is this fork's source file and is
+  // written in Simplified Chinese, so an equality check here would only ever
+  // compare two different languages. What is still guarded is the thing that
+  // actually breaks delivery — that the key exists, and that it targets a
+  // player exactly when the English original did.
   const newPhrases: Array<[string, string, string]> = [
     ["attack", "betray", "Betray [P1]!"],
     ["attack", "build_sams", "Build SAMs!"],
@@ -112,16 +118,18 @@ describe("QuickChat phrases", () => {
   ];
 
   test.each(newPhrases)(
-    "%s.%s is a valid quick chat key with English text",
+    "%s.%s is a valid quick chat key with text",
     (category, key, text) => {
       expect(QuickChatKeySchema.safeParse(`${category}.${key}`).success).toBe(
         true,
       );
-      expect(englishText(category, key)).toBe(text);
+      const actual = englishText(category, key);
+      expect(actual).toBeTruthy();
+      expect((actual ?? "").includes("[P1]")).toBe(text.includes("[P1]"));
     },
   );
 
-  test("every phrase in QuickChat.json has English text", () => {
+  test("every phrase in QuickChat.json has text", () => {
     const missing: string[] = [];
     for (const [category, entries] of Object.entries(quickChatData)) {
       for (const entry of entries) {
