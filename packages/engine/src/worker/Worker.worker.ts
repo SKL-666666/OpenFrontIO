@@ -15,7 +15,11 @@ import {
   TransportShipSpawnResultMessage,
   WorkerMessage,
 } from "@openfront/engine-api/worker/WorkerMessages";
-import { AssetManifest, buildAssetUrl } from "@openfront/engine-lib/AssetPaths";
+import {
+  absolutizeAssetUrl,
+  AssetManifest,
+  buildAssetUrl,
+} from "@openfront/engine-lib/AssetPaths";
 import { FetchGameMapLoader } from "@openfront/engine-lib/game/FetchGameMapLoader";
 import {
   createGameRunner,
@@ -31,7 +35,12 @@ let gameRunner: Promise<GameRunner> | null = null;
 // From the init message; workers have no `window` to read it from.
 let cdnBase = "";
 const mapLoader = new FetchGameMapLoader((path) =>
-  buildAssetUrl(`maps/${path}`, __ASSET_MANIFEST__ ?? {}, cdnBase),
+  // This worker is inlined as a blob: URL by Vite, which has no base to
+  // resolve "/_assets/…" against, so it needs the origin spelled out.
+  absolutizeAssetUrl(
+    buildAssetUrl(`maps/${path}`, __ASSET_MANIFEST__ ?? {}, cdnBase),
+    self.location.origin,
+  ),
 );
 // Yield threshold; not a backlog cap. Used to avoid monopolizing the worker task
 // and flooding the main thread with messages during catch-up.

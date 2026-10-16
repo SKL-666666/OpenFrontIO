@@ -74,3 +74,27 @@ export function buildAssetUrl(
 
   return `/${encodeAssetPath(normalizedPath)}`;
 }
+
+// buildAssetUrl returns root-relative URLs ("/_assets/…") whenever no CDN
+// base is configured. The document resolves those for the main thread, and a
+// worker loaded from a real script URL resolves them against its own origin —
+// but a Vite inline worker (?worker&inline, how both the core and the replay
+// workers ship) runs from a blob: URL, an opaque path that cannot be a base,
+// so fetch() there rejects them with "Failed to parse URL from …". Prefixing
+// the origin the blob inherits from its creating page makes them resolvable
+// in every worker.
+export function absolutizeAssetUrl(url: string, origin: string): string {
+  if (!url.startsWith("/")) {
+    return url;
+  }
+  if (url.startsWith("//")) {
+    return url;
+  }
+  const base = origin.replace(/\/+$/, "");
+  // An empty origin (no location, e.g. SSR) or an opaque "null" origin has
+  // nothing to prefix, so leave the URL as-is rather than break it.
+  if (base === "" || base === "null") {
+    return url;
+  }
+  return `${base}${url}`;
+}

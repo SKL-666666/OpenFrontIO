@@ -2,6 +2,7 @@
 // @openfront/* imports to Node, which only strips types: type-only imports
 // must be marked `type` here and in anything this file imports.
 import {
+  absolutizeAssetUrl,
   type AssetManifest,
   buildAssetUrl,
 } from "@openfront/engine-lib/AssetPaths";
@@ -36,7 +37,18 @@ export function getCdnBase(): string {
 }
 
 export function assetUrl(path: string): string {
-  return buildAssetUrl(path, getAssetManifest(), getCdnBase());
+  const url = buildAssetUrl(path, getAssetManifest(), getCdnBase());
+  if (typeof window !== "undefined") {
+    // The document's base URL already resolves root-relative paths.
+    return url;
+  }
+  // Worker (or any runtime with no document): an inlined worker runs from a
+  // blob: URL with no resolvable base, so root-relative URLs must carry their
+  // origin explicitly. Without a location there is nothing to prefix, and the
+  // URL is returned unchanged.
+  const origin =
+    typeof self !== "undefined" && self.location ? self.location.origin : "";
+  return absolutizeAssetUrl(url, origin);
 }
 
 // Rewrites Vite's emitted /assets/... references in the built index.html to

@@ -22,7 +22,7 @@
  * player pastes its `ws://<host>:<port>` address into the room dialog.
  */
 import { spawn } from "node:child_process";
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -391,6 +391,33 @@ function openBrowser(url) {
   }
 }
 
+/**
+ * `npm run build-prod` writes to the same `static/` directory but leaves
+ * index.html as an unrendered EJS template: production expects the game
+ * server to fill it in at request time, and there is no game server here.
+ * Serving it hands the browser literal `<% %>` text — including inside the
+ * BOOTSTRAP_CONFIG inline script, which is a SyntaxError, so the client never
+ * boots. Say so instead of letting the page fail silently.
+ */
+function warnIfTemplateNotRendered() {
+  if (staticDir === null) return;
+  const index = path.join(staticDir, "index.html");
+  if (!existsSync(index)) return;
+  let html;
+  try {
+    html = readFileSync(index, "utf8");
+  } catch {
+    return;
+  }
+  if (!html.includes("<%")) return;
+  console.warn(
+    "\n  [warn] static/index.html is an unrendered EJS template:\n" +
+      "         it came from `npm run build-prod`, which expects a game\n" +
+      "         server to render it. Rebuild for local use with:\n\n" +
+      "           npm run build:offline\n",
+  );
+}
+
 server.listen(PORT, HOST, () => {
   const addresses = lanAddresses();
   console.log("OpenFront LAN relay");
@@ -402,6 +429,7 @@ server.listen(PORT, HOST, () => {
         : "(no static/ — run: npm run build:offline)"
     }`,
   );
+  warnIfTemplateNotRendered();
   for (const address of addresses) {
     console.log(`  LAN URL  http://${address}:${PORT}/`);
     console.log(`  relay    ws://${address}:${PORT}`);

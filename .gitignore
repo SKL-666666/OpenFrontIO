@@ -23,6 +23,11 @@ src/assets/
 eslint_out.txt
 tests/perf/output/
 
+# scripts/browser-smoke.mjs output: the headless Chrome it drives keeps its
+# user-data-dir and screenshot in the repo root.
+.browser-smoke.png
+.browser-smoke-profile/
+
 # Locally built Go binary (gen-maps uses `go run .`)
 map-generator/map-generator
 map-generator/map-generator.exe

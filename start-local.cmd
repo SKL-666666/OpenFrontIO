@@ -47,8 +47,14 @@ if /i "%~1"=="--build" (
   if errorlevel 1 goto :fail
   goto :doserve
 )
-if not exist "static\index.html" (
-  echo  [2/3] Building the client ^(about a minute the first time^)...
+rem  static\ must be a LOCAL build. npm run build-prod writes the same
+rem  directory but leaves index.html as an unrendered EJS template for the
+rem  game server to fill in at request time -- there is no such server here,
+rem  so the browser would be handed literal EJS tags as text and never boot.
+call node scripts\check-local-build.mjs
+if errorlevel 1 (
+  echo  [2/3] static\ is missing, or is a production build that still needs
+  echo        rendering. Rebuilding it for local use...
   call npm run build:offline
   if errorlevel 1 goto :fail
   goto :doserve

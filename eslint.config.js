@@ -29,11 +29,17 @@ export default [
     languageOptions: {
       parserOptions: {
         projectService: {
+          // The standalone scripts listed in allowDefaultProject below sit
+          // outside every tsconfig, so they fall back to eslint's default
+          // project, which is capped at 8 matched files.
+          maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 16,
           allowDefaultProject: [
             "__mocks__/fileMock.js",
             "eslint.config.js",
             "scripts/sync-assets.mjs",
             "scripts/lan-host.mjs",
+            "scripts/check-local-build.mjs",
+            "scripts/browser-smoke.mjs",
             "tests/matchmaking/*.mjs",
           ],
         },

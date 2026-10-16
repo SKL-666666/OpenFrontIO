@@ -178,9 +178,19 @@ function randomWorkerCreateProxy(numWorkers: number): Plugin {
   };
 }
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const isProduction = mode === "production";
+  // Whether hashed assets are actually emitted. The dev SERVER serves
+  // resources/ straight off disk (publicDir plus serveProprietaryDir), so it
+  // must keep an EMPTY manifest and let assetUrl() fall back to the plain
+  // relative path. A BUILD, whatever its mode, has to do the opposite: an
+  // empty manifest there sends assetUrl() to e.g. "images/OpenFrontLogo.svg",
+  // a file that only exists under proprietary/ and is copied out as a hashed
+  // _assets/ image -- so the page 404s on it. build:offline is mode
+  // development but is still a build, which is why this is `command` and not
+  // `isProduction`.
+  const isBuild = command === "build";
   // The local-only fork. LOCAL_ONLY is set by `npm run dev` / `build:offline`
   // and is the single switch behind two decisions: whether index.html is told
   // to take the offline menu, and whether the dev server keeps proxies to a
@@ -214,7 +224,7 @@ export default defineConfig(({ mode }) => {
   const resourcesDir = getResourcesDir(__dirname);
   const proprietaryDir = getProprietaryDir(__dirname);
   const sourceDirs = [resourcesDir, proprietaryDir];
-  const assetManifest: AssetManifest = isProduction
+  const assetManifest: AssetManifest = isBuild
     ? buildPublicAssetManifest(sourceDirs)
     : {};
   const cdnBase = env.CDN_BASE ?? "";
@@ -408,9 +418,11 @@ export default defineConfig(({ mode }) => {
               },
             }),
           ]),
-      ...(isProduction
-        ? [injectCdnBaseTemplate(), syncHashedPublicAssets()]
-        : []),
+      ...(isProduction ? [injectCdnBaseTemplate()] : []),
+      // Emits the hashed _assets/ tree and writes the manifest back out, so
+      // every build -- offline included -- resolves assetUrl() to files that
+      // are really there.
+      ...(isBuild ? [syncHashedPublicAssets()] : []),
       tailwindcss(),
     ],
 

@@ -392,6 +392,18 @@
       </div>
       <% } %>
 
+      <!-- The translation resolver is a child of the page footer (Footer.ts),
+           which the block above strips out as online-only chrome on a local
+           build -- and translateText() resolves the active language through
+           document.querySelector("lang-selector"). With none in the DOM it
+           echoes every key back, so the whole UI renders raw translation
+           keys. A local build carries its own instance instead, kept out of
+           the layout: one element, never two (the selector is a singleton by
+           query order, and only one of the two blocks is ever emitted). -->
+      <% if (typeof local !== "undefined" && local) { %>
+      <lang-selector class="hidden"></lang-selector>
+      <% } %>
+
       <!-- Global Modals -->
       <steam-link-modal></steam-link-modal>
       <steam-handoff-modal></steam-handoff-modal>

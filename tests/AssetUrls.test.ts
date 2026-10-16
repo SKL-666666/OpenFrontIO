@@ -1,6 +1,9 @@
-import { buildAssetUrl } from "@openfront/engine-lib/AssetPaths";
-import { rewriteAssetsForCdn } from "@openfront/shared/AssetUrls";
-import { describe, expect, test } from "vitest";
+import {
+  absolutizeAssetUrl,
+  buildAssetUrl,
+} from "@openfront/engine-lib/AssetPaths";
+import { assetUrl, rewriteAssetsForCdn } from "@openfront/shared/AssetUrls";
+import { describe, expect, test, vi } from "vitest";
 
 describe("AssetUrls", () => {
   test("returns hashed URLs for direct asset matches", () => {
@@ -112,6 +115,76 @@ describe("AssetUrls", () => {
         "https://cdn.example.com///",
       ),
     ).toBe("https://cdn.example.com/_assets/images/Favicon.hash.svg");
+  });
+});
+
+// Vite inlines both game workers as blob: URLs, and a blob has no base URL of
+// its own: fetch() of "/_assets/…" there throws "Failed to parse URL", which
+// left a local-only build (no CDN base, so buildAssetUrl returns root-relative
+// paths) hanging forever on the "game is starting" overlay — the engine worker
+// died loading the map manifest before the first tick.
+describe("absolutizeAssetUrl", () => {
+  test("prefixes the origin onto root-relative URLs", () => {
+    expect(
+      absolutizeAssetUrl(
+        "/_assets/maps/world/map.hash.bin",
+        "http://127.0.0.1:9415",
+      ),
+    ).toBe("http://127.0.0.1:9415/_assets/maps/world/map.hash.bin");
+    expect(absolutizeAssetUrl("/flags/US.svg", "https://example.com/")).toBe(
+      "https://example.com/flags/US.svg",
+    );
+  });
+
+  test("leaves already-absolute URLs unchanged", () => {
+    expect(
+      absolutizeAssetUrl("https://cdn.example.com/a.svg", "http://x"),
+    ).toBe("https://cdn.example.com/a.svg");
+    expect(
+      absolutizeAssetUrl("app://openfront/_assets/a.svg", "http://x"),
+    ).toBe("app://openfront/_assets/a.svg");
+  });
+
+  test("leaves protocol-relative URLs unchanged", () => {
+    expect(absolutizeAssetUrl("//cdn.example.com/a.svg", "http://x")).toBe(
+      "//cdn.example.com/a.svg",
+    );
+  });
+
+  test("leaves the URL unchanged when there is no usable origin", () => {
+    expect(absolutizeAssetUrl("/a.svg", "")).toBe("/a.svg");
+    expect(absolutizeAssetUrl("/a.svg", "null")).toBe("/a.svg");
+  });
+});
+
+describe("assetUrl in a worker", () => {
+  test("absolutizes root-relative URLs against the worker origin", () => {
+    vi.stubGlobal("window", undefined);
+    vi.stubGlobal("self", { location: { origin: "http://127.0.0.1:9415" } });
+    try {
+      expect(assetUrl("flags/US.svg")).toBe(
+        "http://127.0.0.1:9415/flags/US.svg",
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test("keeps absolute URLs absolute in a worker", () => {
+    vi.stubGlobal("window", undefined);
+    vi.stubGlobal("self", { location: { origin: "http://127.0.0.1:9415" } });
+    try {
+      expect(assetUrl("http://other.example/a.svg")).toBe(
+        "http://other.example/a.svg",
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test("is unchanged on the main thread", () => {
+    // jsdom gives the test a window, so this is the document branch.
+    expect(assetUrl("flags/US.svg")).toBe("/flags/US.svg");
   });
 });
 
