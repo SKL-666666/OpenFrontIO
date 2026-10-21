@@ -28,6 +28,7 @@ const PORT = Number(process.env.SMOKE_PORT ?? 9415);
 const CDP_PORT = 9333;
 const PAGE = `http://127.0.0.1:${PORT}/`;
 const doClick = process.argv.includes("--click");
+const doGod = process.argv.includes("--god");
 
 const say = (m) => {
   console.log(m);
@@ -211,6 +212,63 @@ async function evalJs(expression, awaitPromise = true) {
   return { value: r.result.value };
 }
 
+async function clickAt(x, y) {
+  await send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x,
+    y,
+    button: "none",
+  });
+  await send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x,
+    y,
+    button: "left",
+    clickCount: 1,
+  });
+  await send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x,
+    y,
+    button: "left",
+    clickCount: 1,
+  });
+  await sleep(35);
+}
+
+async function rightClickAt(x, y) {
+  await send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x,
+    y,
+    button: "none",
+  });
+  await send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x,
+    y,
+    button: "right",
+    clickCount: 1,
+  });
+  await send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x,
+    y,
+    button: "right",
+    clickCount: 1,
+  });
+  await sleep(60);
+}
+
+// A spread of points over the middle of the canvas, away from the HUD panels.
+async function clickGrid() {
+  for (let x = 300; x <= 980; x += 120) {
+    for (let y = 200; y <= 700; y += 100) {
+      await clickAt(x, y);
+    }
+  }
+}
+
 await send("Page.navigate", { url: PAGE });
 await sleep(6000);
 
@@ -312,6 +370,250 @@ if (doClick) {
 }
 
 await sleep(1000);
+if (doGod) {
+  // Still in the spawn phase here; pick a spawn tile first so the tests run in
+  // a live game (the human has territory and the clock is running).
+  console.log("=== spawning ===");
+  await clickAt(660, 420);
+  await sleep(2500);
+  console.log(
+    JSON.stringify(
+      await evalJs(
+        `(() => {
+        const g = document.querySelector('settings-modal')?.game;
+        return g
+          ? {
+              alive: g.myPlayer()?.isAlive() ?? null,
+              tiles: g.myPlayer()?.numTilesOwned?.() ?? null,
+            }
+          : { game: null };
+      })()`,
+        false,
+      ),
+    ),
+  );
+
+  console.log("=== right-click radial (god hub) ===");
+  await rightClickAt(700, 400);
+  await sleep(1200);
+  console.log(
+    JSON.stringify(
+      await evalJs(
+        `(() => {
+        const g = document.querySelector('settings-modal')?.game;
+        const root = document.querySelector('.radial-menu-container');
+        const texts = [...document.querySelectorAll(
+          '.radial-menu-container text, .radial-menu-container div',
+        )]
+          .map((e) => (e.textContent || '').trim())
+          .filter(Boolean);
+        return {
+          gameType: g?.config?.().gameConfig().gameType ?? null,
+          radialVisible: root
+            ? getComputedStyle(root).display !== 'none' &&
+              getComputedStyle(root).visibility !== 'hidden'
+            : false,
+          hasGodHub: texts.includes('神'),
+          nodeCount: texts.length,
+        };
+      })()`,
+        false,
+      ),
+    ),
+  );
+  const godHubPoint = await evalJs(
+    `(() => {
+      const t = [...document.querySelectorAll('.radial-menu-container text')].find(
+        (e) => (e.textContent || '').trim() === '神',
+      );
+      if (!t) return null;
+      const r = t.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`,
+    false,
+  );
+  console.log(`god hub point: ${JSON.stringify(godHubPoint?.value ?? null)}`);
+  if (godHubPoint?.value) {
+    await clickAt(godHubPoint.value.x, godHubPoint.value.y);
+    await sleep(900);
+    console.log(
+      JSON.stringify(
+        await evalJs(
+          `(() => {
+          const texts = [...document.querySelectorAll('.radial-menu-container text')]
+            .map((e) => (e.textContent || '').trim())
+            .filter(Boolean);
+          return {
+            hasLaws: texts.includes('法则'),
+            hasPlayers: texts.includes('玩家'),
+            hasTerrain: texts.includes('地形'),
+            hasBuild: texts.includes('建造'),
+            texts,
+          };
+        })()`,
+          false,
+        ),
+      ),
+    );
+  }
+  await evalJs(
+    `(() => {
+      const el = document.querySelector('.radial-menu-container');
+      if (!el) return false;
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      return true;
+    })()`,
+    false,
+  );
+  await sleep(400);
+
+  console.log("=== opening in-game menu ===");
+  console.log(
+    JSON.stringify(
+      await evalJs(
+        `(() => {
+        const img = document.querySelector('game-right-sidebar img[alt="settings"]');
+        if (!img) return { found: false };
+        (img.closest('.cursor-pointer') || img.parentElement).click();
+        return { found: true };
+      })()`,
+        false,
+      ),
+    ),
+  );
+  await sleep(1500);
+  console.log("=== god section ===");
+  console.log(
+    JSON.stringify(
+      await evalJs(
+        `(() => {
+        const m = document.querySelector('settings-modal');
+        const txt = m ? m.textContent || '' : '';
+        const rows = [...document.querySelectorAll('settings-modal button')]
+          .map((b) => (b.textContent || '').trim())
+          .filter((t) => /无限|上帝|核弹|瞬间|困难|金币|军队|消灭/.test(t));
+        let game = null;
+        try {
+          game = m && m.game
+            ? {
+                players: m.game.players().length,
+                withClient: m.game.players().filter((p) => p.clientID() !== null).length,
+                myClient: m.game.myPlayer()?.clientID() ?? null,
+                myGold: String(m.game.myPlayer()?.gold() ?? "0"),
+                myAlive: m.game.myPlayer()?.isAlive() ?? null,
+                myTiles: m.game.myPlayer()?.numTilesOwned() ?? null,
+              }
+            : null;
+        } catch (e) {
+          game = { error: String(e) };
+        }
+        return { open: m ? m.open : null, hasGodTitle: txt.includes('上帝模式'), rows, game };
+      })()`,
+        false,
+      ),
+    ),
+  );
+  console.log("=== toggling infinite gold + a player power ===");
+  console.log(
+    JSON.stringify(
+      await evalJs(
+        `(() => {
+        const btns = [...document.querySelectorAll('settings-modal button')];
+        const gold = btns.find((b) => (b.textContent || '').includes('无限金币'));
+        if (gold) gold.click();
+        const give = btns.find((b) => (b.textContent || '').trim() === '+金币');
+        if (give) give.click();
+        const kill = btns.find((b) => (b.textContent || '').trim() === '消灭');
+        if (kill) kill.click();
+        return { goldToggle: !!gold, giveGold: !!give, conquer: !!kill };
+      })()`,
+        false,
+      ),
+    ),
+  );
+  await sleep(800);
+
+  const gameQuery = async (expr) => {
+    const r = await evalJs(
+      `(() => { const g = document.querySelector('settings-modal').game; return ${expr}; })()`,
+      false,
+    );
+    return r.value;
+  };
+  const armBrush = (label) =>
+    evalJs(
+      `(() => {
+        const btns = [...document.querySelectorAll('settings-modal button')];
+        const b = btns.find((x) => (x.textContent || '').trim() === ${JSON.stringify(label)});
+        if (!b) return { found: false };
+        b.click();
+        const m = document.querySelector('settings-modal');
+        return { found: true, armed: !!m?.uiState?.godBrush, open: m?.open };
+      })()`,
+      false,
+    );
+  const openMenu = () =>
+    evalJs(
+      `(() => {
+        const img = document.querySelector('game-right-sidebar img[alt="settings"]');
+        if (!img) return { found: false };
+        (img.closest('.cursor-pointer') || img.parentElement).click();
+        return { found: true };
+      })()`,
+      false,
+    );
+  const pressEsc = () =>
+    evalJs(
+      `(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); return true; })()`,
+      false,
+    );
+  const readIndicator = () =>
+    evalJs(
+      `(() => {
+        const ind = [...document.querySelectorAll('body > div')].find((d) =>
+          (d.textContent || '').includes('上帝之笔'),
+        );
+        return { indicator: ind ? ind.textContent : null };
+      })()`,
+      false,
+    );
+
+  console.log("=== paint test: build City on the map ===");
+  console.log(JSON.stringify(await armBrush("城市")));
+  await sleep(400);
+  console.log(JSON.stringify(await readIndicator()));
+  const cityBefore = await gameQuery("g.units('City').length");
+  await clickGrid();
+  await sleep(1500);
+  const cityAfter = await gameQuery("g.units('City').length");
+  console.log(
+    JSON.stringify({
+      cityBefore,
+      cityAfter,
+      myGoldAfterInfinite: await gameQuery(
+        "String(g.myPlayer()?.gold() ?? '0')",
+      ),
+    }),
+  );
+  await pressEsc();
+  await sleep(300);
+
+  console.log("=== paint test: sink tiles to water ===");
+  console.log(JSON.stringify(await openMenu()));
+  await sleep(1200);
+  console.log(JSON.stringify(await armBrush("降为水面")));
+  await sleep(400);
+  console.log(JSON.stringify(await readIndicator()));
+  const landBefore = await gameQuery("g.numLandTiles()");
+  await clickGrid();
+  await sleep(1500);
+  const landAfter = await gameQuery("g.numLandTiles()");
+  console.log(JSON.stringify({ landBefore, landAfter }));
+  await pressEsc();
+  await sleep(300);
+  console.log(JSON.stringify(await readIndicator()));
+}
+
 try {
   const shot = await send("Page.captureScreenshot", { format: "png" });
   writeFileSync(".browser-smoke.png", Buffer.from(shot.data, "base64"));
