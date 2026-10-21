@@ -20,6 +20,7 @@ import { DonateTroopsExecution } from "./DonateTroopExecution";
 import { EmbargoAllExecution } from "./EmbargoAllExecution";
 import { EmbargoExecution } from "./EmbargoExecution";
 import { EmojiExecution } from "./EmojiExecution";
+import { GodActionExecution } from "./GodActionExecution";
 import { MarkDisconnectedExecution } from "./MarkDisconnectedExecution";
 import { MoveWarshipExecution } from "./MoveWarshipExecution";
 import { NationExecution } from "./NationExecution";
@@ -31,6 +32,7 @@ import { SpawnExecution } from "./SpawnExecution";
 import { TargetPlayerExecution } from "./TargetPlayerExecution";
 import { TransportShipExecution } from "./TransportShipExecution";
 import { TribeSpawner } from "./TribeSpawner";
+import { UpdateGameConfigExecution } from "./UpdateGameConfigExecution";
 import { UpgradeStructureExecution } from "./UpgradeStructureExecution";
 import { PlayerSpawner } from "./utils/PlayerSpawner";
 
@@ -144,6 +146,19 @@ export class Executor {
         return new MarkDisconnectedExecution(player, intent.isDisconnected);
       case "toggle_pause":
         return new PauseExecution(player, intent.paused);
+      case "update_game_config":
+        // Only reached locally: the server intercepts this intent in
+        // multiplayer, so applying it here would be redundant there.
+        return new UpdateGameConfigExecution(intent.config);
+      case "god_action":
+        return new GodActionExecution(
+          player,
+          intent.action,
+          intent.targetSmallID,
+          intent.amount,
+          intent.tile,
+          intent.unit,
+        );
       default:
         throw new Error(`intent type ${intent} not found`);
     }

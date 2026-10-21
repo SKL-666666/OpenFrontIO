@@ -23,6 +23,8 @@ export interface GameMap {
   terrainByte(ref: TileRef): number;
   // Terrain setters
   setWater(ref: TileRef): void;
+  /** Raises water back into a plain land tile (god mode's inverse of setWater). */
+  setLand(ref: TileRef): void;
   /** Bumped every time a land tile turns to water; lets callers cache anything derived from water components. */
   waterVersion(): number;
   setShorelineBit(ref: TileRef): void;

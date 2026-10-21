@@ -306,6 +306,13 @@ export class GameImpl implements Game {
     this.recordTileUpdate(tile);
   }
 
+  setLand(tile: TileRef): void {
+    if (this.isLand(tile)) return;
+    this._territoryVersion++;
+    this._map.setLand(tile);
+    this.recordTileUpdate(tile);
+  }
+
   queueWaterConversion(tile: TileRef): void {
     if (!this.isLand(tile)) return;
     if (this.hasOwner(tile)) {

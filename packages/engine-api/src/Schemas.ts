@@ -46,7 +46,8 @@ export type Intent =
   | KickPlayerIntent
   | TogglePauseIntent
   | UpdateGameConfigIntent
-  | ToggleGameStartTimer;
+  | ToggleGameStartTimer
+  | GodActionIntent;
 
 export type AttackIntent = z.infer<typeof AttackIntentSchema>;
 export type CancelAttackIntent = z.infer<typeof CancelAttackIntentSchema>;
@@ -83,6 +84,7 @@ export type UpdateGameConfigIntent = z.infer<
 export type ToggleGameStartTimer = z.infer<
   typeof ToggleGameStartTimerIntentSchema
 >;
+export type GodActionIntent = z.infer<typeof GodActionIntentSchema>;
 
 export type Turn = z.infer<typeof TurnSchema>;
 export type GameConfig = z.infer<typeof GameConfigSchema>;
@@ -541,6 +543,35 @@ export const ToggleGameStartTimerIntentSchema = z.object({
   type: z.literal("toggle_game_start_timer"),
 });
 
+// God mode (local/singleplayer only): direct manipulation of another player,
+// the "mouse" of a WorldBox-style god. The intent's own stamped clientID is
+// the god (the local player) who performs a conquest; `target` names the
+// player acted upon. The engine applies it in GodActionExecution; a server
+// never lets a client-sourced god_action through.
+export const GodActionIntentSchema = z.object({
+  type: z.literal("god_action"),
+  action: z.enum([
+    "gold",
+    "troops",
+    "conquer",
+    // Tile brush (WorldBox-style). `tile` carries the clicked tile.
+    "build", // place `unit` at `tile` for targetSmallID (or the god when 0)
+    "water", // land -> water
+    "land", // water -> land
+    "give", // give `tile` to targetSmallID (or the god when 0)
+    "erase", // relinquish `tile` back to TerraNullius
+  ]),
+  // The target's smallID (game-local integer), not clientID: bots and nations
+  // have no clientID, and they are exactly who a singleplayer god acts on.
+  targetSmallID: zb.uint(),
+  // gold/troops only.
+  amount: zb.uint().optional(),
+  // build/water/land/give/erase only.
+  tile: zb.uint().optional(),
+  // build only.
+  unit: z.enum(UnitType).optional(),
+});
+
 export const IntentSchema = z.discriminatedUnion("type", [
   AttackIntentSchema,
   CancelAttackIntentSchema,
@@ -567,6 +598,7 @@ export const IntentSchema = z.discriminatedUnion("type", [
   TogglePauseIntentSchema,
   UpdateGameConfigIntentSchema,
   ToggleGameStartTimerIntentSchema,
+  GodActionIntentSchema,
 ]);
 
 // StampedIntent = Intent with server-stamped clientID (used in turns and execution)

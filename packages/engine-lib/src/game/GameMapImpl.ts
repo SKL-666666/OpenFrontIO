@@ -172,6 +172,15 @@ export class GameMapImpl implements GameMap {
     this.numLandTiles_--;
   }
 
+  setLand(ref: TileRef): void {
+    if (this.isLand(ref)) return;
+    this.noteTerrainEdit(ref);
+    this.waterVersion_++;
+    // Plain mid-height land: IS_LAND set, magnitude 16, no ocean/shoreline bits.
+    this.terrain[ref] = (1 << GameMapImpl.IS_LAND_BIT) | 16;
+    this.numLandTiles_++;
+  }
+
   setShorelineBit(ref: TileRef): void {
     this.noteTerrainEdit(ref);
     this.terrain[ref] |= 1 << GameMapImpl.SHORELINE_BIT;

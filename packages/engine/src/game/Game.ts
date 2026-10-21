@@ -644,6 +644,10 @@ export interface Game extends GameLike {
   /** Tick each player was last hit by a nation MIRV, shared by all nations. */
   nationMirvTargets(): Map<PlayerID, Tick>;
   conquerPlayer(conqueror: Player, conquered: Player): void;
+  /** Turn an unowned land tile to water (god mode). Broadcasts a tile update. */
+  setWater(tile: TileRef): void;
+  /** Raise a water tile back to land (god mode). Broadcasts a tile update. */
+  setLand(tile: TileRef): void;
   miniWaterHPA(): PathFinder<number> | null;
   miniWaterGraph(): AbstractGraph | null;
   getWaterComponent(tile: TileRef): number | null;
