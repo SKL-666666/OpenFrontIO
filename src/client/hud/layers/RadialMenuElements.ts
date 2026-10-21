@@ -3,6 +3,8 @@ import {
   AllPlayers,
   BuildableAttacks,
   bulkCost,
+  Difficulty,
+  GameType,
   maxBulkAmount,
   NUKE_BULK_STEPS,
   PlayerActions,
@@ -11,7 +13,11 @@ import {
   Structures,
   UnitType,
 } from "@openfront/engine-api/game/GameTypes";
-import { Emoji, flattenedEmojiTable } from "@openfront/engine-api/Schemas";
+import {
+  Emoji,
+  flattenedEmojiTable,
+  GameConfig,
+} from "@openfront/engine-api/Schemas";
 import { Config } from "@openfront/engine-lib/configuration/Config";
 import { renderNumber } from "@openfront/engine-lib/Format";
 import { findClosestBy } from "@openfront/engine-lib/Util";
@@ -29,6 +35,8 @@ import { TooltipItem } from "./RadialMenu";
 import { EventBus } from "@openfront/shared/EventBus";
 import {
   BuildUnitIntentEvent,
+  SendGodActionIntentEvent,
+  SendUpdateGameConfigIntentEvent,
   SendUpgradeStructureIntentEvent,
 } from "../../Transport";
 const allianceIcon = assetUrl("images/AllianceIconWhite.svg");
@@ -774,6 +782,278 @@ export const centerButtonElement: CenterButtonElement = {
   },
 };
 
+// --- God mode (local / singleplayer) --------------------------------------
+// Surfaced directly in the right-click radial menu instead of being buried in
+// the settings modal. These intents are host-only: a real server drops
+// client-sourced god_action / update_game_config, so the hub is hidden there.
+const GOD_ON_COLOR = "#22c55e";
+
+function isGodAvailable(params: MenuElementParams): boolean {
+  const config = params.game.config();
+  return (
+    !config.isReplay() &&
+    config.gameConfig().gameType !== GameType.Public &&
+    params.game.myPlayer() !== null
+  );
+}
+
+function godLeaf(
+  id: string,
+  short: string,
+  tooltip: string,
+  color: string | ((params: MenuElementParams) => string),
+  action: (params: MenuElementParams) => void,
+  disabled: (params: MenuElementParams) => boolean = () => false,
+): MenuElement {
+  return {
+    id: `god_${id}`,
+    name: tooltip,
+    text: short,
+    fontSize: "12px",
+    icon: "",
+    color,
+    disabled,
+    tooltipItems: [{ text: tooltip, className: "title" }],
+    action,
+  };
+}
+
+function godToggle(
+  id: string,
+  short: string,
+  tooltip: string,
+  read: (config: GameConfig) => boolean,
+  patch: (on: boolean) => Partial<GameConfig>,
+): MenuElement {
+  return godLeaf(
+    id,
+    short,
+    tooltip,
+    (params) =>
+      read(params.game.config().gameConfig()) ? GOD_ON_COLOR : COLORS.info,
+    (params) => {
+      const on = read(params.game.config().gameConfig());
+      params.eventBus.emit(new SendUpdateGameConfigIntentEvent(patch(!on)));
+    },
+  );
+}
+
+function godHub(
+  id: string,
+  text: string,
+  color: string,
+  tooltip: string,
+  subMenu: (params: MenuElementParams) => MenuElement[],
+): MenuElement {
+  return {
+    id: `god_${id}`,
+    name: tooltip,
+    text,
+    fontSize: "13px",
+    icon: "",
+    color,
+    disabled: () => false,
+    tooltipItems: [{ text: tooltip, className: "title" }],
+    subMenu,
+  };
+}
+
+const godWorldLawsElement = godHub(
+  "laws",
+  "法则",
+  "#f59e0b",
+  translateText("user_setting.god_mode_title"),
+  () => [
+    godToggle(
+      "gold",
+      "无限金",
+      translateText("user_setting.god_infinite_gold"),
+      (config) => config.infiniteGold ?? false,
+      (on) => ({ infiniteGold: on }),
+    ),
+    godToggle(
+      "troops",
+      "无限兵",
+      translateText("user_setting.god_infinite_troops"),
+      (config) => config.infiniteTroops ?? false,
+      (on) => ({ infiniteTroops: on }),
+    ),
+    godToggle(
+      "instant",
+      "瞬建",
+      translateText("user_setting.god_instant_build"),
+      (config) => config.instantBuild ?? false,
+      (on) => ({ instantBuild: on }),
+    ),
+    godToggle(
+      "nonuke",
+      "禁核",
+      translateText("user_setting.god_disable_nukes"),
+      (config) => (config.disabledUnits ?? []).includes(UnitType.AtomBomb),
+      (on) => ({
+        disabledUnits: on
+          ? [UnitType.AtomBomb, UnitType.HydrogenBomb, UnitType.MIRV]
+          : [],
+      }),
+    ),
+    godToggle(
+      "hard",
+      "困难",
+      translateText("user_setting.god_hard_difficulty"),
+      (config) => config.difficulty === Difficulty.Hard,
+      (on) => ({ difficulty: on ? Difficulty.Hard : Difficulty.Medium }),
+    ),
+  ],
+);
+
+const godPlayerElement = godHub(
+  "player",
+  "玩家",
+  COLORS.attack,
+  translateText("user_setting.god_players_desc"),
+  () => [
+    godLeaf(
+      "give_gold",
+      "给金",
+      translateText("user_setting.god_gold"),
+      COLORS.trade,
+      (params) => {
+        const target = params.selected;
+        if (target !== null) {
+          params.eventBus.emit(
+            new SendGodActionIntentEvent("gold", target.smallID(), 1_000_000),
+          );
+        }
+      },
+      (params) => params.selected === null,
+    ),
+    godLeaf(
+      "give_troops",
+      "给兵",
+      translateText("user_setting.god_troops"),
+      COLORS.boat,
+      (params) => {
+        const target = params.selected;
+        if (target !== null) {
+          params.eventBus.emit(
+            new SendGodActionIntentEvent("troops", target.smallID(), 1_000),
+          );
+        }
+      },
+      (params) => params.selected === null,
+    ),
+    godLeaf(
+      "conquer",
+      "消灭",
+      translateText("user_setting.god_conquer"),
+      COLORS.delete,
+      (params) => {
+        const target = params.selected;
+        if (target !== null) {
+          params.eventBus.emit(
+            new SendGodActionIntentEvent("conquer", target.smallID()),
+          );
+        }
+      },
+      (params) => params.selected === null,
+    ),
+  ],
+);
+
+function armGodBrush(
+  params: MenuElementParams,
+  brush: NonNullable<UIState["godBrush"]>,
+) {
+  if (params.uiState !== undefined) {
+    params.uiState.godBrush = brush;
+  }
+  params.closeMenu();
+}
+
+const godTerrainElement = godHub(
+  "terrain",
+  "地形",
+  "#7c3aed",
+  translateText("user_setting.god_brush_desc"),
+  () => [
+    godLeaf(
+      "water",
+      "水",
+      translateText("user_setting.god_brush_water"),
+      COLORS.boat,
+      (params) => armGodBrush(params, { action: "water" }),
+    ),
+    godLeaf(
+      "land",
+      "陆",
+      translateText("user_setting.god_brush_land"),
+      "#84cc16",
+      (params) => armGodBrush(params, { action: "land" }),
+    ),
+    godLeaf(
+      "give",
+      "归我",
+      translateText("user_setting.god_brush_give"),
+      "#0ea5e9",
+      (params) => armGodBrush(params, { action: "give" }),
+    ),
+    godLeaf(
+      "erase",
+      "抹除",
+      translateText("user_setting.god_brush_erase"),
+      COLORS.delete,
+      (params) => armGodBrush(params, { action: "erase" }),
+    ),
+  ],
+);
+
+const GOD_BUILD_SHORTCUTS: {
+  unit: PlayerBuildableUnitType;
+  short: string;
+  key: string;
+}[] = [
+  { unit: UnitType.City, short: "城", key: "unit_type.city" },
+  { unit: UnitType.Port, short: "港", key: "unit_type.port" },
+  { unit: UnitType.DefensePost, short: "堡", key: "unit_type.defense_post" },
+  { unit: UnitType.MissileSilo, short: "井", key: "unit_type.missile_silo" },
+  {
+    unit: UnitType.SAMLauncher,
+    short: "防",
+    key: "unit_type.sam_launcher",
+  },
+  { unit: UnitType.Factory, short: "厂", key: "unit_type.factory" },
+];
+
+const godBuildElement = godHub(
+  "build",
+  "建造",
+  COLORS.build,
+  translateText("user_setting.god_brush_build"),
+  () =>
+    GOD_BUILD_SHORTCUTS.map(({ unit, short, key }) =>
+      godLeaf(
+        `build_${unit}`,
+        short,
+        translateText(key),
+        COLORS.build,
+        (params) => armGodBrush(params, { action: "build", unit }),
+      ),
+    ),
+);
+
+export const godMenuElement: MenuElement = godHub(
+  "root",
+  "神",
+  "#a855f7",
+  translateText("user_setting.god_mode_title"),
+  () => [
+    godWorldLawsElement,
+    godPlayerElement,
+    godTerrainElement,
+    godBuildElement,
+  ],
+);
+
 export const rootMenuElement: MenuElement = {
   id: "root",
   name: "root",
@@ -814,6 +1094,7 @@ export const rootMenuElement: MenuElement = {
               ? donateGoldRadialElement
               : attackMenuElement,
           ]),
+      isGodAvailable(params) ? godMenuElement : null,
     ];
 
     return menuItems.filter((item): item is MenuElement => item !== null);

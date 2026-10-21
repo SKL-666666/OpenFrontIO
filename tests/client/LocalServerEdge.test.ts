@@ -110,4 +110,66 @@ describe("LocalServer edge cases", () => {
     server.onMessage({ type: "hash", turnNumber: 0, hash: 1111 });
     expect(messages.filter((m) => m.type === "desync")).toHaveLength(1);
   });
+
+  it("queues a config patch sent while paused, but drops other intents", () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 200 })),
+    );
+    const messages: ServerMessage[] = [];
+    const server = new LocalServer(
+      {
+        gameStartInfo: makeGameStartInfo(),
+        playerName: "TestUser",
+        playerClanTag: null,
+      } as any,
+      false,
+      new EventBus(),
+    );
+    server.updateCallback(
+      () => {},
+      (message) => messages.push(message),
+    );
+    server.start();
+
+    // Pause, then poke it from the (paused) in-game menu.
+    server.onMessage({
+      type: "intent",
+      intent: { type: "toggle_pause", paused: true },
+    } as any);
+    server.onMessage({
+      type: "intent",
+      intent: { type: "update_game_config", config: { infiniteGold: true } },
+    } as any);
+    server.onMessage({
+      type: "intent",
+      intent: {
+        type: "god_action",
+        action: "gold",
+        targetSmallID: 2,
+        amount: 1000,
+      },
+    } as any);
+    // A non-pause intent is still dropped while paused.
+    server.onMessage({
+      type: "intent",
+      intent: { type: "build_unit", unit: "City", tile: 1 },
+    } as any);
+    server.onMessage({
+      type: "intent",
+      intent: { type: "toggle_pause", paused: false },
+    } as any);
+    server.endGame();
+    vi.unstubAllGlobals();
+
+    const intents = messages
+      .filter((m) => m.type === "turn")
+      .flatMap((m) => (m as any).turn.intents);
+    expect(intents.map((i: any) => i.type)).toEqual([
+      "toggle_pause",
+      "update_game_config",
+      "god_action",
+      "toggle_pause",
+    ]);
+  });
 });

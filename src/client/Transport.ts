@@ -11,6 +11,7 @@ import {
   AllPlayersStats,
   ClientID,
   GameConfig,
+  GodActionIntent,
   Intent,
   Winner,
 } from "@openfront/engine-api/Schemas";
@@ -224,6 +225,18 @@ export class SendUpdateGameConfigIntentEvent implements GameEvent {
   constructor(public readonly config: Partial<GameConfig>) {}
 }
 
+// God mode (local/singleplayer): act directly on another player. See
+// GodActionExecution for what each action does.
+export class SendGodActionIntentEvent implements GameEvent {
+  constructor(
+    public readonly action: GodActionIntent["action"],
+    public readonly targetSmallID: number,
+    public readonly amount?: number,
+    public readonly tile?: number,
+    public readonly unit?: UnitType,
+  ) {}
+}
+
 export class SendToggleGameStartTimer implements GameEvent {
   constructor() {}
 }
@@ -380,7 +393,9 @@ export class Transport {
     this.subscribe(SendUpdateGameConfigIntentEvent, (e) =>
       this.onSendUpdateGameConfigIntent(e),
     );
-
+    this.subscribe(SendGodActionIntentEvent, (e) =>
+      this.onSendGodActionIntent(e),
+    );
     this.subscribe(SendToggleGameStartTimer, (e) =>
       this.onSendToggleGameStartTimer(e),
     );
@@ -1087,6 +1102,17 @@ export class Transport {
     this.sendIntent({
       type: "update_game_config",
       config: event.config,
+    });
+  }
+
+  private onSendGodActionIntent(event: SendGodActionIntentEvent) {
+    this.sendIntent({
+      type: "god_action",
+      action: event.action,
+      targetSmallID: event.targetSmallID,
+      amount: event.amount,
+      tile: event.tile,
+      unit: event.unit,
     });
   }
 

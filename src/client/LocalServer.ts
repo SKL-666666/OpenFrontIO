@@ -205,8 +205,14 @@ export class LocalServer {
         }
         return;
       }
-      // Don't process non-pause intents during replays or while paused
-      if (this.lobbyConfig.gameRecord || this.paused) {
+      // Don't process non-pause intents during replays or while paused. God
+      // mode is the exception: its config patches and player actions are
+      // issued from the paused in-game menu, so let them queue and take
+      // effect when play resumes.
+      const queuesWhilePaused =
+        stampedIntent.type === "update_game_config" ||
+        stampedIntent.type === "god_action";
+      if (this.lobbyConfig.gameRecord || (this.paused && !queuesWhilePaused)) {
         return;
       }
 

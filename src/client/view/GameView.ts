@@ -977,6 +977,9 @@ export class GameView implements GameLike {
   setWater(ref: TileRef): void {
     this._map.setWater(ref);
   }
+  setLand(ref: TileRef): void {
+    this._map.setLand(ref);
+  }
   setShorelineBit(ref: TileRef): void {
     this._map.setShorelineBit(ref);
   }

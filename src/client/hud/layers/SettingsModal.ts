@@ -1,16 +1,24 @@
+import { Difficulty, UnitType } from "@openfront/engine-api/game/GameTypes";
+import type { GameConfig } from "@openfront/engine-api/Schemas";
 import { assetUrl } from "@openfront/shared/AssetUrls";
 import { EventBus } from "@openfront/shared/EventBus";
 import { html, LitElement } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
 import { crazyGamesSDK } from "src/client/CrazyGamesSDK";
-import { PauseGameIntentEvent } from "src/client/Transport";
+import {
+  PauseGameIntentEvent,
+  SendGodActionIntentEvent,
+  SendUpdateGameConfigIntentEvent,
+} from "src/client/Transport";
 import { Controller } from "../../Controller";
 import {
   AlternateViewEvent,
   ToggleRenderDebugGuiEvent,
 } from "../../InputHandler";
+import type { GodBrush, UIState } from "../../UIState";
 import type { UserSettingModal } from "../../UserSettingModal";
 import { homeHref, translateText } from "../../Utils";
+import type { GameView } from "../../view";
 const exitIcon = assetUrl("images/ExitIconWhite.svg");
 const settingsIcon = assetUrl("images/SettingIconWhite.svg");
 const treeIcon = assetUrl("images/TreeIconWhite.svg");
@@ -52,6 +60,22 @@ export class SettingsModal extends LitElement implements Controller {
   @property({ type: Boolean })
   wasPausedWhenOpened = false;
 
+  /** Set by the game renderer; absent in the standalone replay viewer. */
+  public game?: GameView;
+
+  /** Shared client state; the god brush is armed through it. */
+  public uiState?: UIState;
+
+  // God mode ("world laws"). The client does not receive config updates back
+  // from the engine, so the modal keeps its own mirror of the toggles, seeded
+  // once from the game's starting config.
+  @state() private godInfiniteGold = false;
+  @state() private godInfiniteTroops = false;
+  @state() private godInstantBuild = false;
+  @state() private godDisableNukes = false;
+  @state() private godHardDifficulty = false;
+  private godSeeded = false;
+
   init() {
     this.eventBus.on(ShowSettingsModalEvent, (event) => {
       this.isVisible = event.isVisible;
@@ -59,6 +83,257 @@ export class SettingsModal extends LitElement implements Controller {
       this.wasPausedWhenOpened = event.isPaused;
       this.pauseGame(true);
     });
+  }
+
+  protected updated(): void {
+    if (this.isVisible) this.seedGodMode();
+  }
+
+  private seedGodMode() {
+    if (this.godSeeded || this.game === undefined) return;
+    this.godSeeded = true;
+    const cfg = this.game.config().gameConfig();
+    this.godInfiniteGold = cfg.infiniteGold ?? false;
+    this.godInfiniteTroops = cfg.infiniteTroops ?? false;
+    this.godInstantBuild = cfg.instantBuild ?? false;
+    this.godHardDifficulty = cfg.difficulty === Difficulty.Hard;
+    this.godDisableNukes = (cfg.disabledUnits ?? []).includes(
+      UnitType.AtomBomb,
+    );
+  }
+
+  private sendGodPatch(config: Partial<GameConfig>) {
+    this.eventBus.emit(new SendUpdateGameConfigIntentEvent(config));
+  }
+
+  private onGodInfiniteGold = () => {
+    this.godInfiniteGold = !this.godInfiniteGold;
+    this.sendGodPatch({ infiniteGold: this.godInfiniteGold });
+  };
+
+  private onGodInfiniteTroops = () => {
+    this.godInfiniteTroops = !this.godInfiniteTroops;
+    this.sendGodPatch({ infiniteTroops: this.godInfiniteTroops });
+  };
+
+  private onGodInstantBuild = () => {
+    this.godInstantBuild = !this.godInstantBuild;
+    this.sendGodPatch({ instantBuild: this.godInstantBuild });
+  };
+
+  private onGodDisableNukes = () => {
+    this.godDisableNukes = !this.godDisableNukes;
+    this.sendGodPatch({
+      disabledUnits: this.godDisableNukes
+        ? [UnitType.AtomBomb, UnitType.HydrogenBomb, UnitType.MIRV]
+        : [],
+    });
+  };
+
+  private onGodHardDifficulty = () => {
+    this.godHardDifficulty = !this.godHardDifficulty;
+    this.sendGodPatch({
+      difficulty: this.godHardDifficulty ? Difficulty.Hard : Difficulty.Medium,
+    });
+  };
+
+  private onGodGold = (smallID: number) => {
+    this.eventBus.emit(
+      new SendGodActionIntentEvent("gold", smallID, 1_000_000),
+    );
+  };
+
+  private onGodTroops = (smallID: number) => {
+    this.eventBus.emit(new SendGodActionIntentEvent("troops", smallID, 1_000));
+  };
+
+  private onGodConquer = (smallID: number) => {
+    this.eventBus.emit(new SendGodActionIntentEvent("conquer", smallID));
+  };
+
+  // Tile brushes arm a mode that paints the map on the next click. Arming
+  // closes the menu so the click reaches the map.
+  private onGodBrush = (
+    action: GodBrush["action"],
+    unit?: GodBrush["unit"],
+  ) => {
+    if (this.uiState === undefined) return;
+    this.uiState.godBrush =
+      this.uiState.godBrush?.action === action &&
+      this.uiState.godBrush?.unit === unit
+        ? null // clicking the armed brush again disarms it
+        : { action, unit };
+    this.closeModal();
+  };
+
+  private renderGodBrushButton(
+    labelKey: string,
+    action: GodBrush["action"],
+    unit?: GodBrush["unit"],
+  ) {
+    const armed =
+      this.uiState?.godBrush?.action === action &&
+      this.uiState?.godBrush?.unit === unit;
+    return html`
+      <button
+        class="px-2 py-1 text-xs rounded-sm ${armed
+          ? "bg-amber-500 text-slate-900"
+          : "bg-violet-600/30 hover:bg-violet-600/50 text-violet-200"}"
+        @click=${() => this.onGodBrush(action, unit)}
+      >
+        ${translateText(labelKey)}
+      </button>
+    `;
+  }
+
+  private static readonly GOD_BUILD_UNITS: {
+    unit: GodBrush["unit"];
+    key: string;
+  }[] = [
+    { unit: UnitType.City, key: "unit_type.city" },
+    { unit: UnitType.Port, key: "unit_type.port" },
+    { unit: UnitType.DefensePost, key: "unit_type.defense_post" },
+    { unit: UnitType.MissileSilo, key: "unit_type.missile_silo" },
+    { unit: UnitType.SAMLauncher, key: "unit_type.sam_launcher" },
+    { unit: UnitType.Factory, key: "unit_type.factory" },
+  ];
+
+  private renderGodBrushes() {
+    return html`
+      <div class="px-3 pt-2 text-xs text-slate-500">
+        ${translateText("user_setting.god_brush_desc")}
+      </div>
+      <div class="flex flex-wrap gap-2 px-3 py-2">
+        ${this.renderGodBrushButton("user_setting.god_brush_water", "water")}
+        ${this.renderGodBrushButton("user_setting.god_brush_land", "land")}
+        ${this.renderGodBrushButton("user_setting.god_brush_give", "give")}
+        ${this.renderGodBrushButton("user_setting.god_brush_erase", "erase")}
+      </div>
+      <div class="px-3 text-xs text-slate-500">
+        ${translateText("user_setting.god_brush_build")}
+      </div>
+      <div class="flex flex-wrap gap-2 px-3 py-2">
+        ${SettingsModal.GOD_BUILD_UNITS.map(({ unit, key }) =>
+          this.renderGodBrushButton(key, "build", unit),
+        )}
+      </div>
+    `;
+  }
+
+  private static readonly GOD_TARGET_LIMIT = 8;
+
+  private renderGodPlayers() {
+    const mySmallID = this.game?.myPlayer()?.smallID() ?? null;
+    const players = (this.game?.players() ?? [])
+      .filter((p) => p.isAlive() && p.smallID() !== mySmallID)
+      .sort((a, b) => b.troops() - a.troops())
+      .slice(0, SettingsModal.GOD_TARGET_LIMIT);
+
+    if (players.length === 0) {
+      return html`<div class="px-3 py-1 text-xs text-slate-500">
+        ${translateText("user_setting.god_no_targets")}
+      </div>`;
+    }
+
+    return html`
+      <div class="px-3 py-1 text-xs text-slate-500">
+        ${translateText("user_setting.god_players_desc")}
+      </div>
+      ${players.map((p) => {
+        const id = p.smallID();
+        return html`
+          <div
+            class="flex items-center gap-2 px-3 py-2 hover:bg-slate-700 rounded-sm"
+          >
+            <div class="flex-1 text-white text-sm truncate">
+              ${p.displayName()}
+            </div>
+            <button
+              class="px-2 py-1 text-xs rounded-sm bg-amber-600/30 hover:bg-amber-600/50 text-amber-200"
+              @click=${() => this.onGodGold(id)}
+            >
+              ${translateText("user_setting.god_gold")}
+            </button>
+            <button
+              class="px-2 py-1 text-xs rounded-sm bg-sky-600/30 hover:bg-sky-600/50 text-sky-200"
+              @click=${() => this.onGodTroops(id)}
+            >
+              ${translateText("user_setting.god_troops")}
+            </button>
+            <button
+              class="px-2 py-1 text-xs rounded-sm bg-red-600/30 hover:bg-red-600/50 text-red-200"
+              @click=${() => this.onGodConquer(id)}
+            >
+              ${translateText("user_setting.god_conquer")}
+            </button>
+          </div>
+        `;
+      })}
+    `;
+  }
+
+  private renderGodToggle(labelKey: string, on: boolean, onClick: () => void) {
+    return html`
+      <button
+        class="flex gap-3 items-center w-full text-left p-3 hover:bg-slate-700 rounded-sm text-white transition-colors"
+        @click="${onClick}"
+      >
+        <div class="flex-1">
+          <div class="font-medium">${translateText(labelKey)}</div>
+        </div>
+        <div class="text-sm ${on ? "text-emerald-400" : "text-slate-400"}">
+          ${on
+            ? translateText("user_setting.on")
+            : translateText("user_setting.off")}
+        </div>
+      </button>
+    `;
+  }
+
+  private renderGodModeSection() {
+    return html`
+      <div class="border-t border-slate-600 pt-3 mt-4">
+        <div
+          class="px-3 py-1 text-xs font-semibold text-amber-400 uppercase tracking-wider"
+        >
+          ${translateText("user_setting.god_mode_title")}
+        </div>
+        <div class="px-3 pb-1 text-xs text-slate-500">
+          ${translateText("user_setting.god_mode_desc")}
+        </div>
+        ${this.renderGodToggle(
+          "user_setting.god_infinite_gold",
+          this.godInfiniteGold,
+          this.onGodInfiniteGold,
+        )}
+        ${this.renderGodToggle(
+          "user_setting.god_infinite_troops",
+          this.godInfiniteTroops,
+          this.onGodInfiniteTroops,
+        )}
+        ${this.renderGodToggle(
+          "user_setting.god_instant_build",
+          this.godInstantBuild,
+          this.onGodInstantBuild,
+        )}
+        ${this.renderGodToggle(
+          "user_setting.god_disable_nukes",
+          this.godDisableNukes,
+          this.onGodDisableNukes,
+        )}
+        ${this.renderGodToggle(
+          "user_setting.god_hard_difficulty",
+          this.godHardDifficulty,
+          this.onGodHardDifficulty,
+        )}
+        <div class="border-t border-slate-700 mt-2 pt-2">
+          ${this.renderGodPlayers()}
+        </div>
+        <div class="border-t border-slate-700 mt-2 pt-2">
+          ${this.renderGodBrushes()}
+        </div>
+      </div>
+    `;
   }
 
   createRenderRoot() {
@@ -260,6 +535,8 @@ export class SettingsModal extends LitElement implements Controller {
                 </div>
               </button>
             </div>
+
+            ${this.renderGodModeSection()}
 
             <div class="border-t border-slate-600 pt-3 mt-4">
               <button
